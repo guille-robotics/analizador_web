@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Analizador de rivales</title>
+<style>
+  :root {
+    --bg:#f4f6f3; --panel:#ffffff; --text:#1b231e; --muted:#5f6b63; --line:#dfe5e0;
+    --btn:#1f7a4d; --btn-h:#17603c; --btn-text:#ffffff; --soft:#e5f2ea; --accent:#1f7a4d;
+    --warn:#8a5200; --warn-bg:#fff3dc; --err:#a8231b; --err-bg:#fdebe9;
+    --user-bg:#1f7a4d; --user-text:#ffffff; --bot-bg:#eef2ee;
+    --shadow:0 1px 2px rgba(20,30,24,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#111613; --panel:#19201c; --text:#e6ece8; --muted:#97a39b; --line:#2a342e;
+      --btn:#2f7d59; --btn-h:#38906a; --soft:#1c2c23; --accent:#4cbd86;
+      --warn:#f1c27a; --warn-bg:#352a14; --err:#f3a7a1; --err-bg:#3a1f1d;
+      --user-bg:#2f7d59; --bot-bg:#232d27; --shadow:none;
+    }
+  }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  button, input, select, textarea { font:inherit; color:inherit; }
+  a { color:var(--accent); }
+
+  .app { display:grid; grid-template-columns:290px 1fr; height:100vh; }
+  .side { background:var(--panel); border-right:1px solid var(--line); padding:16px;
+          display:flex; flex-direction:column; gap:14px; overflow:hidden; }
+  .brand { font-weight:700; font-size:17px; display:flex; align-items:center; gap:10px; }
+  .brand i { width:14px; height:14px; border-radius:50%; background:var(--btn); display:inline-block;
+             box-shadow:inset 0 0 0 3px var(--panel), 0 0 0 2px var(--btn); }
+  .list { overflow-y:auto; display:flex; flex-direction:column; gap:6px; margin:0 -6px; padding:0 6px; }
+  .empty { color:var(--muted); font-size:14px; padding:6px 2px; }
+  .item { display:flex; align-items:center; gap:10px; padding:9px 10px; border-radius:10px; cursor:pointer;
+          border:1px solid transparent; }
+  .item:hover { background:var(--bot-bg); }
+  .item.active { background:var(--soft); border-color:var(--line); }
+  .dot { width:9px; height:9px; border-radius:50%; flex:none; background:var(--muted); }
+  .dot.done { background:#2fa36b; } .dot.error { background:#d2453b; }
+  .dot.running, .dot.queued { background:#e0a020; animation:pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity:.35; } }
+  .item .t { flex:1; min-width:0; }
+  .item .t b { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600; }
+  .item .t span { font-size:12.5px; color:var(--muted); }
+  .item .x { border:0; background:none; color:var(--muted); cursor:pointer; font-size:18px; line-height:1;
+             padding:2px 6px; border-radius:6px; opacity:0; }
+  .item:hover .x, .item.active .x { opacity:1; }
+  .item .x:hover { color:var(--err); background:var(--err-bg); }
+
+  .main { display:flex; flex-direction:column; height:100vh; min-width:0; overflow:hidden; padding:22px 28px; gap:14px; }
+  .btn { border:0; border-radius:10px; padding:10px 16px; cursor:pointer; background:var(--bot-bg); font-weight:600; }
+  .btn:hover { background:var(--line); }
+  .btn.primary { background:var(--btn); color:var(--btn-text); }
+  .btn.primary:hover { background:var(--btn-h); }
+  .btn:disabled { opacity:.55; cursor:default; }
+  .btn.block { width:100%; }
+
+  .banner { background:var(--warn-bg); color:var(--warn); border-radius:10px; padding:10px 14px; font-size:14px; }
+  .banner code { background:rgba(0,0,0,.08); padding:1px 5px; border-radius:5px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:20px; box-shadow:var(--shadow); }
+
+  #viewNew { overflow-y:auto; flex:1; }
+  #viewNew .card { max-width:720px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .lead { color:var(--muted); margin:0 0 18px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px 16px; }
+  .grid .full { grid-column:1 / -1; }
+  label { display:block; font-weight:600; font-size:13.5px; margin-bottom:5px; }
+  label small { font-weight:400; color:var(--muted); }
+  input, select, textarea { width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:9px;
+                            background:var(--bg); }
+  input:focus, select:focus, textarea:focus { outline:2px solid var(--accent); outline-offset:1px; border-color:transparent; }
+  .hint { color:var(--muted); font-size:13px; margin-top:4px; }
+  .formerr { color:var(--err); margin:12px 0 0; min-height:1.2em; font-weight:600; }
+  .actions { margin-top:18px; display:flex; align-items:center; gap:14px; }
+
+  #viewAnalysis { flex:1; min-height:0; display:flex; flex-direction:column; gap:12px; }
+  .head h2 { margin:0; font-size:22px; }
+  .sub { color:var(--muted); margin:2px 0 0; font-size:14px; }
+  .bar { height:8px; border-radius:6px; background:var(--bot-bg); overflow:hidden; }
+  #barFill { height:100%; width:0; background:var(--btn); transition:width .4s; }
+  .log { margin:14px 0 0; padding:12px; background:var(--bg); border-radius:10px; font:12.5px/1.6 ui-monospace,Consolas,monospace;
+         max-height:300px; overflow:auto; white-space:pre-wrap; }
+  .errbox { background:var(--err-bg); color:var(--err); border-radius:12px; padding:16px; }
+  .errbox pre { white-space:pre-wrap; margin:8px 0 12px; font:13px/1.5 ui-monospace,Consolas,monospace; }
+
+  .tabs { display:flex; gap:6px; border-bottom:1px solid var(--line); }
+  .tab { border:0; background:none; padding:9px 14px; cursor:pointer; font-weight:600; color:var(--muted);
+         border-bottom:3px solid transparent; margin-bottom:-1px; }
+  .tab.active { color:var(--text); border-color:var(--btn); }
+  #aBody { flex:1; min-height:0; display:flex; flex-direction:column; gap:12px; }
+  .pane { flex:1; min-height:0; overflow-y:auto; }
+
+  .chat { height:100%; display:flex; flex-direction:column; gap:10px; }
+  .msgs { flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:2px 2px 8px; }
+  .msg { display:flex; } .msg.user { justify-content:flex-end; }
+  .bubble { max-width:min(760px,88%); padding:10px 14px; border-radius:14px; overflow-wrap:anywhere; }
+  .msg.user .bubble { background:var(--user-bg); color:var(--user-text); white-space:pre-wrap; border-bottom-right-radius:4px; }
+  .msg.bot .bubble { background:var(--bot-bg); border-bottom-left-radius:4px; }
+  .msg.err .bubble { background:var(--err-bg); color:var(--err); }
+  .welcome { color:var(--muted); margin:auto; text-align:center; max-width:460px; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; }
+  .chip { border:1px solid var(--line); background:var(--panel); border-radius:20px; padding:6px 12px; cursor:pointer; font-size:13.5px; }
+  .chip:hover { background:var(--soft); }
+  .composer form { display:flex; gap:10px; align-items:flex-end; }
+  .composer textarea { resize:none; max-height:140px; background:var(--panel); }
+  .typing span { display:inline-block; width:7px; height:7px; margin:0 2px; border-radius:50%; background:var(--muted);
+                 animation:pulse 1s infinite; }
+  .typing span:nth-child(2) { animation-delay:.15s; } .typing span:nth-child(3) { animation-delay:.3s; }
+
+  .md > :first-child { margin-top:0; } .md > :last-child { margin-bottom:0; }
+  .md h2, .md h3, .md h4 { margin:16px 0 6px; line-height:1.3; }
+  .md h2 { font-size:19px; } .md h3 { font-size:16.5px; } .md h4 { font-size:15px; }
+  .md p { margin:8px 0; } .md ul, .md ol { margin:6px 0; padding-left:22px; } .md li { margin:3px 0; }
+  .md code { background:var(--bg); padding:1px 5px; border-radius:5px; font-size:13px; }
+  .md hr { border:0; border-top:1px solid var(--line); margin:14px 0; }
+  .report-actions { margin-bottom:10px; }
+
+  .frames { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px; }
+  .fcard { background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  .fcard img { width:100%; display:block; aspect-ratio:16/9; object-fit:cover; background:#000; }
+  .fcard .fb { padding:10px 12px; font-size:14px; }
+  .badge { font-size:12px; border-radius:20px; padding:1px 9px; background:var(--soft); color:var(--accent); margin-left:6px; font-weight:600; }
+  .badge.off { background:var(--bot-bg); color:var(--muted); }
+  .fcard details { margin-top:6px; } .fcard summary { cursor:pointer; color:var(--accent); font-weight:600; }
+  .fcard .md { margin-top:8px; font-size:13.5px; }
+
+  @media (max-width: 820px) {
+    .app { display:block; height:auto; }
+    .side { border-right:0; border-bottom:1px solid var(--line); max-height:none; }
+    .list { max-height:180px; }
+    .main { height:auto; overflow:visible; padding:16px; }
+    .grid { grid-template-columns:1fr; }
+    .chat { height:70vh; } #viewAnalysis { min-height:70vh; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><i></i> Analizador de rivales</div>
+    <button class="btn primary block" id="btnNew">+ Nuevo análisis</button>
+    <div class="list" id="list"></div>
+  </aside>
+
+  <main class="main">
+    <div id="banner"></div>
+
+    <section id="viewNew">
+      <div class="card">
+        <h1>Nuevo análisis</h1>
+        <p class="lead">Pega el enlace del partido, indica el tramo y cómo reconocer al equipo en el video.</p>
+        <form id="form" autocomplete="off">
+          <div class="grid">
+            <div class="full">
+              <label for="f_url">Enlace de YouTube</label>
+              <input id="f_url" type="url" placeholder="https://www.youtube.com/watch?v=..." required>
+            </div>
+            <div>
+              <label for="f_team">Equipo a analizar</label>
+              <input id="f_team" type="text" placeholder="Municipal" required>
+            </div>
+            <div>
+              <label for="f_position">Juega de</label>
+              <select id="f_position"><option value="local">Local</option><option value="visitante">Visitante</option></select>
+            </div>
+            <div>
+              <label for="f_color">Color de su camiseta</label>
+              <input id="f_color" type="text" placeholder="blanco" required>
+            </div>
+            <div>
+              <label for="f_rival_color">Color del rival <small>(opcional)</small></label>
+              <input id="f_rival_color" type="text" placeholder="azul">
+            </div>
+            <div>
+              <label for="f_start_minute">Minuto de inicio <small>(del video)</small></label>
+              <input id="f_start_minute" type="number" min="0" step="1" value="0">
+            </div>
+            <div>
+              <label for="f_duration_minutes">Duración <small>(minutos)</small></label>
+              <input id="f_duration_minutes" type="number" min="1" max="30" step="1" value="10">
+            </div>
+            <div>
+              <label for="f_n_frames">Frames a analizar</label>
+              <input id="f_n_frames" type="number" min="3" max="20" step="1" value="8">
+              <div class="hint">Más frames = más detalle y más costo.</div>
+            </div>
+          </div>
+          <div class="hint" style="margin-top:14px">
+            El minuto es el del video de YouTube, no el del partido (si el video arranca antes del pitazo inicial, cuéntalo).
+            El equipo se reconoce solo por el color de camiseta: mira el video y confirma el color.
+          </div>
+          <p class="formerr" id="formError"></p>
+          <div class="actions"><button class="btn primary" id="btnGo" type="submit">Analizar</button></div>
+        </form>
+      </div>
+    </section>
+
+    <section id="viewAnalysis" hidden>
+      <div class="head">
+        <h2 id="aTitle"></h2>
+        <p class="sub" id="aSub"></p>
+      </div>
+      <div id="aBody"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const FIELDS = ['url','team','position','color','rival_color','start_minute','duration_minutes','n_frames'];
+const STATUS = { queued:'En cola', running:'Analizando…', done:'Listo', error:'Error' };
+const SUGGESTIONS = ['¿Qué formación usa?', '¿Cómo defiende?', '¿Cómo construye el juego?',
+                     '¿Cuáles son sus debilidades?', '¿Quiénes son los jugadores clave?', '¿Cómo lo enfrentamos?'];
+let cfg = {}, current = null, pollTimer = null, tab = 'chat', chatBusy = false;
+
+/* ---------- utilidades ---------- */
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  let data = null;
+  try { data = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error((data && data.error) || ('Error ' + r.status));
+  return data;
+}
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function md(src) {
+  const lines = esc(src || '').split('\n');
+  let html = '', list = null;
+  const close = () => { if (list) { html += '</' + list + '>'; list = null; } };
+  const inl = t => t.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<code>$1</code>');
+  for (const raw of lines) {
+    let m;
+    if ((m = raw.match(/^(#{1,4})\s+(.*)$/))) { close(); const l = Math.min(m[1].length + 1, 4); html += `<h${l}>${inl(m[2])}</h${l}>`; }
+    else if ((m = raw.match(/^\s*[-*•]\s+(.*)$/))) { if (list !== 'ul') { close(); html += '<ul>'; list = 'ul'; } html += `<li>${inl(m[1])}</li>`; }
+    else if ((m = raw.match(/^\s*\d+[.)]\s+(.*)$/))) { if (list !== 'ol') { close(); html += '<ol>'; list = 'ol'; } html += `<li>${inl(m[1])}</li>`; }
+    else if (/^\s*(-{3,}|_{3,})\s*$/.test(raw)) { close(); html += '<hr>'; }
+    else if (!raw.trim()) { close(); }
+    else { close(); html += `<p>${inl(raw)}</p>`; }
+  }
+  close();
+  return html;
+}
+
+const posLabel = p => p === 'visitante' ? 'Visitante' : 'Local';
+const rangeLabel = m => `min ${m.start_minute}–${m.start_minute + m.duration_minutes}`;
+function saveForm(v) { try { localStorage.setItem('analizador_form', JSON.stringify(v)); } catch (e) {} }
+function loadSaved() { try { return JSON.parse(localStorage.getItem('analizador_form')) || {}; } catch (e) { return {}; } }
+
+/* ---------- configuración y avisos ---------- */
+async function init() {
+  try { cfg = await api('/api/config'); } catch (e) { cfg = {}; }
+  const msgs = [];
+  if (cfg.has_key === false) msgs.push('Falta la API key: copia <code>.env.example</code> como <code>.env</code>, pega tu clave y reinicia el servidor.');
+  if (cfg.ffmpeg === false) msgs.push('No encuentro <code>ffmpeg</code>: instálalo con <code>winget install Gyan.FFmpeg</code> y reinicia la terminal.');
+  $('#banner').innerHTML = msgs.map(m => `<div class="banner" style="margin-bottom:8px">${m}</div>`).join('');
+  if (cfg.max_duration) $('#f_duration_minutes').max = cfg.max_duration;
+  if (cfg.frames) { $('#f_n_frames').min = cfg.frames.min; $('#f_n_frames').max = cfg.frames.max; $('#f_n_frames').value = cfg.frames.default; }
+  await loadList();
+  showNew();
+}
+
+/* ---------- lista lateral ---------- */
+async function loadList() {
+  let items = [];
+  try { items = await api('/api/analisis'); } catch (e) {}
+  const box = $('#list');
+  if (!items.length) { box.innerHTML = '<div class="empty">Aún no hay análisis.</div>'; return; }
+  box.innerHTML = items.map(m => `
+    <div class="item ${current && current.id === m.id ? 'active' : ''}" data-id="${esc(m.id)}">
+      <span class="dot ${esc(m.status)}"></span>
+      <div class="t"><b>${esc(m.team)}</b><span>${rangeLabel(m)} · ${STATUS[m.status] || ''}</span></div>
+      <button class="x" data-del="${esc(m.id)}" title="Borrar">×</button>
+    </div>`).join('');
+}
+$('#list').addEventListener('click', async e => {
+  const del = e.target.closest('[data-del]');
+  if (del) {
+    e.stopPropagation();
+    if (!confirm('¿Borrar este análisis y sus frames?')) return;
+    const id = del.dataset.del;
+    await api('/api/analisis/' + id, { method: 'DELETE' });
+    if (current && current.id === id) showNew();
+    return loadList();
+  }
+  const it = e.target.closest('.item');
+  if (it) openAnalysis(it.dataset.id);
+});
+$('#btnNew').addEventListener('click', () => showNew());
+
+/* ---------- formulario ---------- */
+function showNew(prefill) {
+  stopPolling(); current = null;
+  $('#viewAnalysis').hidden = true; $('#viewNew').hidden = false;
+  const v = prefill || loadSaved();
+  FIELDS.forEach(k => { const el = $('#f_' + k); if (el && v[k] !== undefined && v[k] !== null) el.value = v[k]; });
+  $('#formError').textContent = '';
+  loadList();
+}
+$('#form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const body = {}; FIELDS.forEach(k => body[k] = $('#f_' + k).value);
+  saveForm(body);
+  const btn = $('#btnGo'); btn.disabled = true; $('#formError').textContent = '';
+  try {
+    const r = await api('/api/analisis', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    await openAnalysis(r.id);
+  } catch (ex) { $('#formError').textContent = ex.message; }
+  finally { btn.disabled = false; }
+});
+
+/* ---------- vista de análisis ---------- */
+function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+function startPolling(id) {
+  stopPolling();
+  pollTimer = setInterval(async () => {
+    try {
+      const m = await api('/api/analisis/' + id);
+      if (!current || current.id !== id) return stopPolling();
+      current = m;
+      if (m.status === 'queued' || m.status === 'running') { renderStatus(); }
+      else { stopPolling(); tab = 'chat'; renderAnalysis(); }
+      loadList();
+    } catch (e) {}
+  }, 1500);
+}
+
+async function openAnalysis(id) {
+  stopPolling();
+  let m;
+  try { m = await api('/api/analisis/' + id); } catch (e) { showNew(); return; }
+  if (!current || current.id !== id) tab = 'chat';
+  current = m;
+  $('#viewNew').hidden = true; $('#viewAnalysis').hidden = false;
+  renderAnalysis();
+  loadList();
+  if (m.status === 'queued' || m.status === 'running') startPolling(id);
+}
+
+function renderAnalysis() {
+  const m = current;
+  $('#aTitle').textContent = m.team;
+  $('#aSub').innerHTML = `${rangeLabel(m)} · ${posLabel(m.position)} · camiseta ${esc(m.color)} · <a href="${esc(m.clean_url)}" target="_blank" rel="noopener">ver video</a>`;
+  const body = $('#aBody');
+  if (m.status === 'queued' || m.status === 'running') {
+    body.innerHTML = '<div class="card"><strong>Analizando el partido…</strong> puede tardar unos minutos.<div class="bar" style="margin-top:12px"><div id="barFill"></div></div><pre class="log" id="logBox"></pre></div>';
+    renderStatus();
+  } else if (m.status === 'error') {
+    body.innerHTML = `<div class="errbox"><strong>No se pudo completar el análisis</strong><pre>${esc(m.error)}</pre>
+      <button class="btn primary" id="btnRetry">Volver a intentar con estos datos</button></div>`;
+    $('#btnRetry').onclick = () => showNew({ url: m.url, team: m.team, position: m.position, color: m.color,
+      rival_color: m.rival_color, start_minute: m.start_minute, duration_minutes: m.duration_minutes, n_frames: m.n_frames });
+  } else {
+    const useful = m.frames.filter(f => f.ok).length;
+    body.innerHTML = `<div class="tabs">
+        <button class="tab" data-tab="chat">Chat</button>
+        <button class="tab" data-tab="report">Informe</button>
+        <button class="tab" data-tab="frames">Frames (${useful}/${m.frames.length} útiles)</button>
+      </div><div class="pane" id="pane"></div>`;
+    body.querySelector('.tabs').onclick = e => { const b = e.target.closest('[data-tab]'); if (b) { tab = b.dataset.tab; renderTab(); } };
+    renderTab();
+  }
+}
+
+function renderStatus() {
+  const f = $('#barFill'), l = $('#logBox');
+  if (f) f.style.width = (current.progress || 0) + '%';
+  if (l) { l.textContent = (current.log || []).join('\n'); l.scrollTop = l.scrollHeight; }
+}
+
+function renderTab() {
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  const pane = $('#pane');
+  if (tab === 'report') {
+    pane.innerHTML = `<div class="report-actions"><button class="btn" id="btnCopy">Copiar informe</button></div><div class="card md">${md(current.report)}</div>`;
+    $('#btnCopy').onclick = async e => { try { await navigator.clipboard.writeText(current.report); e.target.textContent = 'Copiado'; } catch (x) { e.target.textContent = 'No se pudo copiar'; } };
+  } else if (tab === 'frames') {
+    pane.innerHTML = '<div class="frames">' + current.frames.map(f => `
+      <div class="fcard">
+        <a href="/media/${esc(current.id)}/${esc(f.file)}" target="_blank"><img loading="lazy" src="/media/${esc(current.id)}/${esc(f.file)}" alt="frame ${esc(f.time)}"></a>
+        <div class="fb"><strong>min ${esc(f.time)}</strong><span class="badge ${f.ok ? '' : 'off'}">${f.ok ? 'útil' : 'descartado'}</span>
+          <details><summary>Ver análisis</summary><div class="md">${md(f.analysis)}</div></details></div>
+      </div>`).join('') + '</div>';
+  } else {
+    renderChat();
+  }
+}
+
+/* ---------- chat ---------- */
+function renderChat() {
+  const pane = $('#pane');
+  pane.innerHTML = `<div class="chat"><div class="msgs" id="msgs"></div>
+    <div class="composer"><div class="chips" id="chips" style="margin-bottom:8px"></div>
+      <form id="chatForm"><textarea id="chatInput" rows="1" placeholder="Pregunta sobre el rival…"></textarea>
+      <button class="btn primary" id="chatSend" type="submit">Enviar</button></form></div></div>`;
+  const msgs = $('#msgs');
+  if (!current.chat.length) {
+    msgs.innerHTML = '<div class="welcome">El informe está listo. Pregunta lo que necesites: formación, cómo defienden, por dónde atacan, cómo enfrentarlos…</div>';
+    $('#chips').innerHTML = SUGGESTIONS.map(s => `<button type="button" class="chip">${esc(s)}</button>`).join('');
+  } else {
+    current.chat.forEach(c => addMsg(c.role === 'user' ? 'user' : 'bot', c.content));
+  }
+  $('#chips').onclick = e => { const c = e.target.closest('.chip'); if (c) sendChat(c.textContent); };
+  const input = $('#chatInput');
+  input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 140) + 'px'; });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#chatForm').requestSubmit(); } });
+  $('#chatForm').addEventListener('submit', e => { e.preventDefault(); sendChat(input.value); });
+  msgs.scrollTop = msgs.scrollHeight;
+  input.focus();
+}
+
+function addMsg(kind, text) {
+  const msgs = $('#msgs'); if (!msgs) return null;
+  const w = msgs.querySelector('.welcome'); if (w) w.remove();
+  const d = document.createElement('div');
+  d.className = 'msg ' + kind;
+  d.innerHTML = '<div class="bubble ' + (kind === 'bot' ? 'md' : '') + '">' + (kind === 'bot' ? md(text) : esc(text)) + '</div>';
+  msgs.appendChild(d); msgs.scrollTop = msgs.scrollHeight;
+  return d;
+}
+
+async function sendChat(text) {
+  text = (text || '').trim();
+  if (!text || chatBusy || !current || current.status !== 'done') return;
+  const id = current.id, input = $('#chatInput');
+  chatBusy = true; $('#chatSend').disabled = true;
+  const chips = $('#chips'); if (chips) chips.innerHTML = '';
+  input.value = ''; input.style.height = 'auto';
+  const userEl = addMsg('user', text);
+  const typing = addMsg('bot', ''); if (typing) typing.querySelector('.bubble').innerHTML = '<span class="typing"><span></span><span></span><span></span></span>';
+  try {
+    const r = await api(`/api/analisis/${id}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text }) });
+    current.chat.push({ role: 'user', content: text }, { role: 'assistant', content: r.answer });
+    if (current.id === id) { if (typing) typing.remove(); addMsg('bot', r.answer); }
+  } catch (e) {
+    if (current && current.id === id) {
+      if (typing) typing.remove(); if (userEl) userEl.remove();
+      addMsg('err', 'No se pudo responder: ' + e.message);
+      const inp = $('#chatInput'); if (inp) inp.value = text;
+    }
+  } finally {
+    chatBusy = false; const s = $('#chatSend'); if (s) s.disabled = false;
+  }
+}
+
+init();
+</script>
+</body>
+</html>
