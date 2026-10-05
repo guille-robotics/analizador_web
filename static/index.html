@@ -28,20 +28,23 @@
   button, input, select, textarea { font:inherit; color:inherit; }
   a { color:var(--accent); }
 
-  .app { display:grid; grid-template-columns:290px 1fr; height:100vh; }
+  .app { display:grid; grid-template-columns:300px 1fr; height:100vh; }
   .side { background:var(--panel); border-right:1px solid var(--line); padding:16px;
-          display:flex; flex-direction:column; gap:14px; overflow:hidden; }
+          display:flex; flex-direction:column; gap:12px; overflow:hidden; }
   .brand { font-weight:700; font-size:17px; display:flex; align-items:center; gap:10px; }
   .brand i { width:14px; height:14px; border-radius:50%; background:var(--btn); display:inline-block;
              box-shadow:inset 0 0 0 3px var(--panel), 0 0 0 2px var(--btn); }
-  .list { overflow-y:auto; display:flex; flex-direction:column; gap:6px; margin:0 -6px; padding:0 6px; }
+  .sidebtns { display:flex; flex-direction:column; gap:8px; }
+  .list { overflow-y:auto; display:flex; flex-direction:column; gap:6px; margin:0 -6px; padding:0 6px; flex:1; min-height:0; }
   .empty { color:var(--muted); font-size:14px; padding:6px 2px; }
   .item { display:flex; align-items:center; gap:10px; padding:9px 10px; border-radius:10px; cursor:pointer;
           border:1px solid transparent; }
   .item:hover { background:var(--bot-bg); }
   .item.active { background:var(--soft); border-color:var(--line); }
+  .item.dim { opacity:.45; cursor:default; }
+  .item.picked { background:var(--soft); border-color:var(--accent); }
   .dot { width:9px; height:9px; border-radius:50%; flex:none; background:var(--muted); }
-  .dot.done { background:#2fa36b; } .dot.error { background:#d2453b; }
+  .dot.done { background:#2fa36b; } .dot.error { background:#d2453b; } .dot.cancelled { background:#9aa39d; }
   .dot.running, .dot.queued { background:#e0a020; animation:pulse 1.2s infinite; }
   @keyframes pulse { 50% { opacity:.35; } }
   .item .t { flex:1; min-width:0; }
@@ -51,12 +54,19 @@
              padding:2px 6px; border-radius:6px; opacity:0; }
   .item:hover .x, .item.active .x { opacity:1; }
   .item .x:hover { color:var(--err); background:var(--err-bg); }
+  .sel { width:16px; height:16px; flex:none; accent-color:var(--btn); margin:0; }
+  #combineBar { border-top:1px solid var(--line); padding-top:12px; display:flex; flex-direction:column; gap:8px; font-size:13.5px; }
+  #combineBar .row { display:flex; gap:8px; }
+  #combineBar .row .btn { flex:1; padding:9px 10px; }
+  .combErr { color:var(--err); font-weight:600; min-height:1.2em; }
 
   .main { display:flex; flex-direction:column; height:100vh; min-width:0; overflow:hidden; padding:22px 28px; gap:14px; }
   .btn { border:0; border-radius:10px; padding:10px 16px; cursor:pointer; background:var(--bot-bg); font-weight:600; }
   .btn:hover { background:var(--line); }
   .btn.primary { background:var(--btn); color:var(--btn-text); }
   .btn.primary:hover { background:var(--btn-h); }
+  .btn.danger { background:var(--err-bg); color:var(--err); }
+  .btn.danger:hover { filter:brightness(.95); }
   .btn:disabled { opacity:.55; cursor:default; }
   .btn.block { width:100%; }
 
@@ -65,7 +75,7 @@
   .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:20px; box-shadow:var(--shadow); }
 
   #viewNew { overflow-y:auto; flex:1; }
-  #viewNew .card { max-width:720px; }
+  #viewNew .card { max-width:760px; }
   h1 { font-size:22px; margin:0 0 4px; }
   .lead { color:var(--muted); margin:0 0 18px; }
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px 16px; }
@@ -79,15 +89,28 @@
   .formerr { color:var(--err); margin:12px 0 0; min-height:1.2em; font-weight:600; }
   .actions { margin-top:18px; display:flex; align-items:center; gap:14px; }
 
+  .previewbox { margin-top:16px; padding-top:14px; border-top:1px dashed var(--line); }
+  .previewbox .prow { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  #previewMsg { white-space:pre-wrap; margin:0; }
+  #previewMsg.err { color:var(--err); font-weight:600; }
+  .pframes { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-top:12px; }
+  .pframes figure { margin:0; }
+  .pframes img { width:100%; display:block; border-radius:8px; aspect-ratio:16/9; object-fit:cover; background:#000; }
+  .pframes figcaption { font-size:12.5px; color:var(--muted); margin-top:3px; }
+  .pframes .nowide { color:var(--warn); }
+
   #viewAnalysis { flex:1; min-height:0; display:flex; flex-direction:column; gap:12px; }
   .head h2 { margin:0; font-size:22px; }
   .sub { color:var(--muted); margin:2px 0 0; font-size:14px; }
-  .bar { height:8px; border-radius:6px; background:var(--bot-bg); overflow:hidden; }
+  .phaseRow { display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; }
+  .bar { height:8px; border-radius:6px; background:var(--bot-bg); overflow:hidden; margin-top:12px; }
   #barFill { height:100%; width:0; background:var(--btn); transition:width .4s; }
   .log { margin:14px 0 0; padding:12px; background:var(--bg); border-radius:10px; font:12.5px/1.6 ui-monospace,Consolas,monospace;
          max-height:300px; overflow:auto; white-space:pre-wrap; }
   .errbox { background:var(--err-bg); color:var(--err); border-radius:12px; padding:16px; }
   .errbox pre { white-space:pre-wrap; margin:8px 0 12px; font:13px/1.5 ui-monospace,Consolas,monospace; }
+  .cancelbox { background:var(--bot-bg); border-radius:12px; padding:16px; }
+  .cancelbox p { margin:6px 0 12px; color:var(--muted); }
 
   .tabs { display:flex; gap:6px; border-bottom:1px solid var(--line); }
   .tab { border:0; background:none; padding:9px 14px; cursor:pointer; font-weight:600; color:var(--muted);
@@ -119,23 +142,30 @@
   .md p { margin:8px 0; } .md ul, .md ol { margin:6px 0; padding-left:22px; } .md li { margin:3px 0; }
   .md code { background:var(--bg); padding:1px 5px; border-radius:5px; font-size:13px; }
   .md hr { border:0; border-top:1px solid var(--line); margin:14px 0; }
-  .report-actions { margin-bottom:10px; }
+  .report-actions { margin-bottom:12px; display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; }
+  .chk { display:flex; align-items:center; gap:7px; font-weight:500; margin:0; font-size:14px; cursor:pointer; }
+  .chk input { width:16px; height:16px; accent-color:var(--btn); }
+  #pdfMsg { margin:0; }
+  #pdfMsg.err { color:var(--err); font-weight:600; }
 
+  .filternote { background:var(--soft); border-radius:10px; padding:9px 14px; margin-bottom:14px; font-size:14px; }
   .frames { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px; }
   .fcard { background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
   .fcard img { width:100%; display:block; aspect-ratio:16/9; object-fit:cover; background:#000; }
   .fcard .fb { padding:10px 12px; font-size:14px; }
   .badge { font-size:12px; border-radius:20px; padding:1px 9px; background:var(--soft); color:var(--accent); margin-left:6px; font-weight:600; }
   .badge.off { background:var(--bot-bg); color:var(--muted); }
-  .fcard details { margin-top:6px; } .fcard summary { cursor:pointer; color:var(--accent); font-weight:600; }
-  .fcard .md { margin-top:8px; font-size:13.5px; }
+  .fcard details, .src details { margin-top:6px; } .fcard summary, .src summary { cursor:pointer; color:var(--accent); font-weight:600; }
+  .fcard .md, .src .md { margin-top:8px; font-size:13.5px; }
+  .src { margin-bottom:12px; }
 
   @media (max-width: 820px) {
     .app { display:block; height:auto; }
     .side { border-right:0; border-bottom:1px solid var(--line); max-height:none; }
-    .list { max-height:180px; }
+    .list { max-height:180px; flex:none; }
     .main { height:auto; overflow:visible; padding:16px; }
     .grid { grid-template-columns:1fr; }
+    .pframes { grid-template-columns:1fr; }
     .chat { height:70vh; } #viewAnalysis { min-height:70vh; }
   }
 </style>
@@ -144,8 +174,19 @@
 <div class="app">
   <aside class="side">
     <div class="brand"><i></i> Analizador de rivales</div>
-    <button class="btn primary block" id="btnNew">+ Nuevo análisis</button>
+    <div class="sidebtns">
+      <button class="btn primary block" id="btnNew">+ Nuevo análisis</button>
+      <button class="btn block" id="btnCombine" title="Une varios análisis del mismo equipo en un solo informe">Combinar análisis</button>
+    </div>
     <div class="list" id="list"></div>
+    <div id="combineBar" hidden>
+      <div id="combineInfo">Elige 2 o más análisis terminados <b>del mismo equipo</b>.</div>
+      <div class="combErr" id="combineErr"></div>
+      <div class="row">
+        <button class="btn primary" id="btnCombineGo" disabled>Crear informe</button>
+        <button class="btn" id="btnCombineExit">Salir</button>
+      </div>
+    </div>
   </aside>
 
   <main class="main">
@@ -188,12 +229,21 @@
             <div>
               <label for="f_n_frames">Frames a analizar</label>
               <input id="f_n_frames" type="number" min="3" max="20" step="1" value="8">
-              <div class="hint">Más frames = más detalle y más costo.</div>
+              <div class="hint">Solo se envían planos generales de la cancha. Más frames = más detalle y más costo.</div>
             </div>
           </div>
+
+          <div class="previewbox">
+            <div class="prow">
+              <button type="button" class="btn" id="btnPreview">Previsualizar el video en ese minuto</button>
+              <p class="hint" id="previewMsg">Descarga 8 segundos para que confirmes el color de camiseta y el minuto.</p>
+            </div>
+            <div class="pframes" id="pframes"></div>
+          </div>
+
           <div class="hint" style="margin-top:14px">
             El minuto es el del video de YouTube, no el del partido (si el video arranca antes del pitazo inicial, cuéntalo).
-            El equipo se reconoce solo por el color de camiseta: mira el video y confirma el color.
+            El equipo se reconoce solo por el color de camiseta.
           </div>
           <p class="formerr" id="formError"></p>
           <div class="actions"><button class="btn primary" id="btnGo" type="submit">Analizar</button></div>
@@ -214,10 +264,15 @@
 <script>
 const $ = s => document.querySelector(s);
 const FIELDS = ['url','team','position','color','rival_color','start_minute','duration_minutes','n_frames'];
-const STATUS = { queued:'En cola', running:'Analizando…', done:'Listo', error:'Error' };
+const STATUS = { queued:'En cola', running:'Analizando…', done:'Listo', error:'Error', cancelled:'Cancelado' };
+const PHASES = { download:'Descargando el tramo del video', filter:'Buscando planos generales',
+                 analysis:'Analizando los frames con Claude', report:'Redactando el informe' };
 const SUGGESTIONS = ['¿Qué formación usa?', '¿Cómo defiende?', '¿Cómo construye el juego?',
                      '¿Cuáles son sus debilidades?', '¿Quiénes son los jugadores clave?', '¿Cómo lo enfrentamos?'];
+const SUGGESTIONS_COMBINED = ['¿Qué patrones se repiten en todas las fuentes?', '¿Qué cambió entre partidos?',
+                     '¿Cuál es su debilidad más consistente?', '¿Cómo lo enfrentamos?'];
 let cfg = {}, current = null, pollTimer = null, tab = 'chat', chatBusy = false;
+let items = [], combineMode = false, selected = new Set(), cancellingId = null, previewCtl = null;
 
 /* ---------- utilidades ---------- */
 async function api(path, opts) {
@@ -228,6 +283,7 @@ async function api(path, opts) {
   return data;
 }
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const normName = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 
 function md(src) {
   const lines = esc(src || '').split('\n');
@@ -248,9 +304,13 @@ function md(src) {
 }
 
 const posLabel = p => p === 'visitante' ? 'Visitante' : 'Local';
-const rangeLabel = m => `min ${m.start_minute}–${m.start_minute + m.duration_minutes}`;
+const isCombined = m => m && m.kind === 'combined';
+const rangeLabel = m => isCombined(m) ? `Combinado · ${m.n_sources != null ? m.n_sources : (m.sources || []).length} fuentes`
+                                       : `min ${m.start_minute}–${m.start_minute + m.duration_minutes}`;
+const matchCount = m => new Set((m.sources || []).map(s => s.clean_url)).size;
 function saveForm(v) { try { localStorage.setItem('analizador_form', JSON.stringify(v)); } catch (e) {} }
 function loadSaved() { try { return JSON.parse(localStorage.getItem('analizador_form')) || {}; } catch (e) { return {}; } }
+const clock = s => { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 
 /* ---------- configuración y avisos ---------- */
 async function init() {
@@ -267,31 +327,86 @@ async function init() {
 
 /* ---------- lista lateral ---------- */
 async function loadList() {
-  let items = [];
-  try { items = await api('/api/analisis'); } catch (e) {}
-  const box = $('#list');
-  if (!items.length) { box.innerHTML = '<div class="empty">Aún no hay análisis.</div>'; return; }
-  box.innerHTML = items.map(m => `
-    <div class="item ${current && current.id === m.id ? 'active' : ''}" data-id="${esc(m.id)}">
-      <span class="dot ${esc(m.status)}"></span>
-      <div class="t"><b>${esc(m.team)}</b><span>${rangeLabel(m)} · ${STATUS[m.status] || ''}</span></div>
-      <button class="x" data-del="${esc(m.id)}" title="Borrar">×</button>
-    </div>`).join('');
+  try { items = await api('/api/analisis'); } catch (e) { items = []; }
+  renderList();
 }
+function selectable(m) { return m.status === 'done' && !isCombined(m); }
+
+function renderList() {
+  const box = $('#list');
+  const combinable = items.filter(selectable).length;
+  $('#btnCombine').disabled = combinable < 2 && !combineMode;
+  $('#btnCombine').title = combinable < 2 ? 'Necesitas al menos 2 análisis terminados' : 'Une varios análisis del mismo equipo en un solo informe';
+  if (!items.length) { box.innerHTML = '<div class="empty">Aún no hay análisis.</div>'; updateCombineBar(); return; }
+  box.innerHTML = items.map(m => {
+    const can = selectable(m);
+    const lead = combineMode
+      ? `<input type="checkbox" class="sel" ${selected.has(m.id) ? 'checked' : ''} ${can ? '' : 'disabled'} tabindex="-1">`
+      : `<span class="dot ${esc(m.status)}"></span>`;
+    const cls = ['item', current && current.id === m.id && !combineMode ? 'active' : '',
+                 combineMode && !can ? 'dim' : '', combineMode && selected.has(m.id) ? 'picked' : ''].join(' ');
+    return `<div class="${cls}" data-id="${esc(m.id)}">${lead}
+      <div class="t"><b>${esc(m.team)}</b><span>${esc(rangeLabel(m))} · ${STATUS[m.status] || ''}</span></div>
+      ${combineMode ? '' : `<button class="x" data-del="${esc(m.id)}" title="Borrar">×</button>`}
+    </div>`;
+  }).join('');
+  updateCombineBar();
+}
+
 $('#list').addEventListener('click', async e => {
+  const it = e.target.closest('.item');
+  if (combineMode) {
+    if (!it) return;
+    const m = items.find(x => x.id === it.dataset.id);
+    if (!m || !selectable(m)) return;
+    if (selected.has(m.id)) selected.delete(m.id); else selected.add(m.id);
+    renderList();
+    return;
+  }
   const del = e.target.closest('[data-del]');
   if (del) {
     e.stopPropagation();
-    if (!confirm('¿Borrar este análisis y sus frames?')) return;
+    const m = items.find(x => x.id === del.dataset.del);
+    const running = m && (m.status === 'queued' || m.status === 'running');
+    if (!confirm(running ? 'Este análisis está en curso. ¿Cancelarlo y borrarlo?' : '¿Borrar este análisis y sus frames?')) return;
     const id = del.dataset.del;
     await api('/api/analisis/' + id, { method: 'DELETE' });
     if (current && current.id === id) showNew();
     return loadList();
   }
-  const it = e.target.closest('.item');
   if (it) openAnalysis(it.dataset.id);
 });
-$('#btnNew').addEventListener('click', () => showNew());
+$('#btnNew').addEventListener('click', () => { setCombineMode(false); showNew(); });
+
+/* ---------- combinar ---------- */
+function setCombineMode(on) {
+  combineMode = on; selected = new Set();
+  $('#combineBar').hidden = !on;
+  $('#btnCombine').hidden = on;
+  $('#combineErr').textContent = '';
+  renderList();
+}
+function updateCombineBar() {
+  if (!combineMode) return;
+  const sel = items.filter(m => selected.has(m.id));
+  const teams = new Set(sel.map(m => normName(m.team)));
+  const mixed = teams.size > 1, max = cfg.max_combine || 8;
+  let info = `Seleccionados: <b>${sel.length}</b>. Elige 2 o más análisis <b>del mismo equipo</b>.`;
+  if (sel.length > max) info = `Máximo ${max} análisis a la vez.`;
+  $('#combineInfo').innerHTML = info;
+  $('#combineErr').textContent = mixed ? 'Mezclaste equipos distintos: elige solo uno.' : '';
+  $('#btnCombineGo').disabled = sel.length < 2 || mixed || sel.length > max;
+}
+$('#btnCombine').addEventListener('click', () => setCombineMode(true));
+$('#btnCombineExit').addEventListener('click', () => setCombineMode(false));
+$('#btnCombineGo').addEventListener('click', async () => {
+  const btn = $('#btnCombineGo'); btn.disabled = true;
+  try {
+    const r = await api('/api/combinar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [...selected] }) });
+    setCombineMode(false);
+    await openAnalysis(r.id);
+  } catch (ex) { $('#combineErr').textContent = ex.message; btn.disabled = false; }
+});
 
 /* ---------- formulario ---------- */
 function showNew(prefill) {
@@ -300,6 +415,7 @@ function showNew(prefill) {
   const v = prefill || loadSaved();
   FIELDS.forEach(k => { const el = $('#f_' + k); if (el && v[k] !== undefined && v[k] !== null) el.value = v[k]; });
   $('#formError').textContent = '';
+  clearPreview();
   loadList();
 }
 $('#form').addEventListener('submit', async e => {
@@ -312,6 +428,41 @@ $('#form').addEventListener('submit', async e => {
     await openAnalysis(r.id);
   } catch (ex) { $('#formError').textContent = ex.message; }
   finally { btn.disabled = false; }
+});
+
+/* ---------- previsualización ---------- */
+const PREVIEW_HINT = 'Descarga 8 segundos para que confirmes el color de camiseta y el minuto.';
+function setPreviewMsg(text, isErr) { const el = $('#previewMsg'); el.textContent = text; el.classList.toggle('err', !!isErr); }
+function clearPreview() {
+  if (previewCtl) previewCtl.abort();
+  $('#pframes').innerHTML = ''; setPreviewMsg(PREVIEW_HINT);
+}
+['#f_url', '#f_start_minute'].forEach(s => $(s).addEventListener('input', () => { if ($('#pframes').innerHTML || previewCtl) clearPreview(); }));
+
+$('#btnPreview').addEventListener('click', async () => {
+  const btn = $('#btnPreview');
+  if (previewCtl) { previewCtl.abort(); return; }          // segundo clic = cancelar
+  const url = $('#f_url').value.trim();
+  if (!url) { setPreviewMsg('Pega primero el enlace de YouTube.', true); return; }
+  const ctl = previewCtl = new AbortController();
+  btn.textContent = 'Cancelar previsualización';
+  $('#pframes').innerHTML = '';
+  setPreviewMsg('Descargando 8 segundos del video… puede tardar unos segundos.');
+  try {
+    const r = await api('/api/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctl.signal,
+      body: JSON.stringify({ url, start_minute: $('#f_start_minute').value }) });
+    $('#pframes').innerHTML = r.frames.map(f => `<figure><img src="/preview/${esc(r.token)}/${esc(f.file)}" alt="min ${esc(f.time)}">
+      <figcaption class="${f.wide ? '' : 'nowide'}">min ${esc(f.time)} · ${f.wide ? 'plano general' : 'no es plano general'}</figcaption></figure>`).join('');
+    const wide = r.frames.filter(f => f.wide).length;
+    setPreviewMsg(wide ? 'Confirma que el equipo a analizar viste del color que escribiste.'
+                       : 'Ninguna toma parece un plano general. Prueba con otro minuto (en la transmisión puede haber una repetición o un primer plano).');
+  } catch (ex) {
+    if (ex.name === 'AbortError') setPreviewMsg('Previsualización cancelada.');
+    else setPreviewMsg(ex.message, true);
+  } finally {
+    if (previewCtl === ctl) previewCtl = null;
+    btn.textContent = 'Previsualizar el video en ese minuto';
+  }
 });
 
 /* ---------- vista de análisis ---------- */
@@ -345,50 +496,129 @@ async function openAnalysis(id) {
 function renderAnalysis() {
   const m = current;
   $('#aTitle').textContent = m.team;
-  $('#aSub').innerHTML = `${rangeLabel(m)} · ${posLabel(m.position)} · camiseta ${esc(m.color)} · <a href="${esc(m.clean_url)}" target="_blank" rel="noopener">ver video</a>`;
+  $('#aSub').innerHTML = isCombined(m)
+    ? `Combinado · ${m.sources.length} fuentes · ${matchCount(m)} partido(s)`
+    : `${rangeLabel(m)} · ${posLabel(m.position)} · camiseta ${esc(m.color)} · <a href="${esc(m.clean_url)}" target="_blank" rel="noopener">ver video</a>`;
   const body = $('#aBody');
   if (m.status === 'queued' || m.status === 'running') {
-    body.innerHTML = '<div class="card"><strong>Analizando el partido…</strong> puede tardar unos minutos.<div class="bar" style="margin-top:12px"><div id="barFill"></div></div><pre class="log" id="logBox"></pre></div>';
+    body.innerHTML = `<div class="card"><div class="phaseRow"><strong id="phaseLabel"></strong>
+      <button class="btn danger" id="btnCancel"></button></div>
+      <div class="bar"><div id="barFill"></div></div><pre class="log" id="logBox"></pre></div>`;
+    $('#btnCancel').onclick = cancelJob;
     renderStatus();
   } else if (m.status === 'error') {
     body.innerHTML = `<div class="errbox"><strong>No se pudo completar el análisis</strong><pre>${esc(m.error)}</pre>
-      <button class="btn primary" id="btnRetry">Volver a intentar con estos datos</button></div>`;
-    $('#btnRetry').onclick = () => showNew({ url: m.url, team: m.team, position: m.position, color: m.color,
-      rival_color: m.rival_color, start_minute: m.start_minute, duration_minutes: m.duration_minutes, n_frames: m.n_frames });
+      <button class="btn primary" id="btnRetry">${isCombined(m) ? 'Volver a generar el informe' : 'Volver a intentar con estos datos'}</button></div>`;
+    $('#btnRetry').onclick = () => retry(m);
+  } else if (m.status === 'cancelled') {
+    body.innerHTML = `<div class="cancelbox"><strong>Análisis cancelado</strong>
+      <p>Se detuvo el proceso y se borró lo descargado. Lo que ya se había analizado no se guarda.</p>
+      <button class="btn primary" id="btnRetry">${isCombined(m) ? 'Volver a generar el informe' : 'Volver a intentar con estos datos'}</button></div>`;
+    $('#btnRetry').onclick = () => retry(m);
   } else {
-    const useful = m.frames.filter(f => f.ok).length;
+    const third = isCombined(m)
+      ? `<button class="tab" data-tab="sources">Fuentes (${m.sources.length})</button>`
+      : `<button class="tab" data-tab="frames">Frames (${m.frames.filter(f => f.ok).length}/${m.frames.length} útiles)</button>`;
     body.innerHTML = `<div class="tabs">
         <button class="tab" data-tab="chat">Chat</button>
-        <button class="tab" data-tab="report">Informe</button>
-        <button class="tab" data-tab="frames">Frames (${useful}/${m.frames.length} útiles)</button>
+        <button class="tab" data-tab="report">Informe</button>${third}
       </div><div class="pane" id="pane"></div>`;
     body.querySelector('.tabs').onclick = e => { const b = e.target.closest('[data-tab]'); if (b) { tab = b.dataset.tab; renderTab(); } };
     renderTab();
   }
 }
 
+async function retry(m) {
+  if (isCombined(m)) {
+    try { await api(`/api/analisis/${m.id}/regenerar`, { method: 'POST' }); await openAnalysis(m.id); }
+    catch (e) { alert(e.message); }
+  } else {
+    showNew({ url: m.url, team: m.team, position: m.position, color: m.color, rival_color: m.rival_color,
+              start_minute: m.start_minute, duration_minutes: m.duration_minutes, n_frames: m.n_frames });
+  }
+}
+
+async function cancelJob() {
+  if (!current) return;
+  const id = current.id; cancellingId = id;
+  const btn = $('#btnCancel'); btn.disabled = true; btn.textContent = 'Cancelando…';
+  try { await api(`/api/analisis/${id}/cancelar`, { method: 'POST' }); }
+  catch (e) { /* si ya terminó (409) el sondeo mostrará el estado final */ }
+}
+
 function renderStatus() {
-  const f = $('#barFill'), l = $('#logBox');
-  if (f) f.style.width = (current.progress || 0) + '%';
-  if (l) { l.textContent = (current.log || []).join('\n'); l.scrollTop = l.scrollHeight; }
+  const m = current, f = $('#barFill'), l = $('#logBox'), lab = $('#phaseLabel'), btn = $('#btnCancel');
+  if (f) f.style.width = (m.progress || 0) + '%';
+  if (l) { l.textContent = (m.log || []).join('\n'); l.scrollTop = l.scrollHeight; }
+  if (lab) {
+    const name = m.status === 'queued' ? 'En cola' : (PHASES[m.phase] || 'Analizando');
+    const el = m.phase_ts ? ` · ${clock(Date.now() / 1000 - m.phase_ts)}` : '';
+    lab.textContent = cancellingId === m.id ? 'Cancelando…' : name + '…' + el;
+  }
+  if (btn && cancellingId !== m.id) {
+    btn.disabled = false;
+    btn.textContent = m.phase === 'download' ? 'Cancelar descarga' : (isCombined(m) ? 'Cancelar' : 'Cancelar análisis');
+  }
 }
 
 function renderTab() {
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  const pane = $('#pane');
+  const pane = $('#pane'), m = current;
   if (tab === 'report') {
-    pane.innerHTML = `<div class="report-actions"><button class="btn" id="btnCopy">Copiar informe</button></div><div class="card md">${md(current.report)}</div>`;
-    $('#btnCopy').onclick = async e => { try { await navigator.clipboard.writeText(current.report); e.target.textContent = 'Copiado'; } catch (x) { e.target.textContent = 'No se pudo copiar'; } };
+    const hasChat = m.chat.length > 0;
+    pane.innerHTML = `<div class="report-actions">
+        <button class="btn primary" id="btnPdf">Descargar PDF</button>
+        ${isCombined(m) ? '' : '<label class="chk"><input type="checkbox" id="pdfFrames" checked> Incluir frames</label>'}
+        <label class="chk"><input type="checkbox" id="pdfChat" ${hasChat ? '' : 'disabled'}> Incluir la conversación</label>
+        <button class="btn" id="btnCopy">Copiar informe</button>
+        <p class="hint" id="pdfMsg"></p></div>
+      <div class="card md">${md(m.report)}</div>`;
+    $('#btnCopy').onclick = async e => { try { await navigator.clipboard.writeText(m.report); e.target.textContent = 'Copiado'; } catch (x) { e.target.textContent = 'No se pudo copiar'; } };
+    $('#btnPdf').onclick = downloadPdf;
   } else if (tab === 'frames') {
-    pane.innerHTML = '<div class="frames">' + current.frames.map(f => `
+    const f = m.filter;
+    const note = f ? `<div class="filternote">Se revisaron <b>${f.reviewed}</b> tomas del tramo: <b>${f.wide}</b> eran planos generales.
+      Se enviaron <b>${f.kept}</b> a Claude${f.fallback ? ' (había muy pocos planos generales; prueba otro minuto)' : ''}; el resto se descartó sin costo.</div>` : '';
+    pane.innerHTML = note + '<div class="frames">' + m.frames.map(fr => `
       <div class="fcard">
-        <a href="/media/${esc(current.id)}/${esc(f.file)}" target="_blank"><img loading="lazy" src="/media/${esc(current.id)}/${esc(f.file)}" alt="frame ${esc(f.time)}"></a>
-        <div class="fb"><strong>min ${esc(f.time)}</strong><span class="badge ${f.ok ? '' : 'off'}">${f.ok ? 'útil' : 'descartado'}</span>
-          <details><summary>Ver análisis</summary><div class="md">${md(f.analysis)}</div></details></div>
+        <a href="/media/${esc(m.id)}/${esc(fr.file)}" target="_blank"><img loading="lazy" src="/media/${esc(m.id)}/${esc(fr.file)}" alt="frame ${esc(fr.time)}"></a>
+        <div class="fb"><strong>min ${esc(fr.time)}</strong><span class="badge ${fr.ok ? '' : 'off'}">${fr.ok ? 'útil' : 'descartado'}</span>
+          <details><summary>Ver análisis</summary><div class="md">${md(fr.analysis)}</div></details></div>
       </div>`).join('') + '</div>';
+  } else if (tab === 'sources') {
+    const matches = {};
+    pane.innerHTML = m.sources.map((s, i) => {
+      const p = matches[s.clean_url] || (matches[s.clean_url] = Object.keys(matches).length + 1);
+      const exists = items.some(x => x.id === s.id);
+      return `<div class="card src"><div><strong>F${i + 1}</strong> · partido P${p} · min ${s.start_minute}–${s.start_minute + s.duration_minutes}
+        · ${posLabel(s.position)} · camiseta ${esc(s.color)} · ${s.n_useful} frames útiles</div>
+        <div class="hint">Analizado el ${esc(String(s.created).replace('T', ' ').slice(0, 16))} ·
+          <a href="${esc(s.clean_url)}" target="_blank" rel="noopener">ver video</a>${exists ? ` · <a href="#" data-open="${esc(s.id)}">abrir ese análisis</a>` : ''}</div>
+        <details><summary>Ver el informe de esta fuente</summary><div class="md">${md(s.report)}</div></details></div>`;
+    }).join('');
+    pane.onclick = e => { const a = e.target.closest('[data-open]'); if (a) { e.preventDefault(); openAnalysis(a.dataset.open); } };
   } else {
     renderChat();
   }
+}
+
+async function downloadPdf() {
+  const id = current.id, btn = $('#btnPdf'), msg = $('#pdfMsg');
+  const frames = $('#pdfFrames') ? $('#pdfFrames').checked : false;
+  const chat = $('#pdfChat') ? $('#pdfChat').checked : false;
+  btn.disabled = true; msg.classList.remove('err'); msg.textContent = 'Creando el PDF…';
+  try {
+    const r = await fetch(`/api/analisis/${id}/pdf?frames=${frames ? 1 : 0}&chat=${chat ? 1 : 0}`);
+    if (!r.ok) { let e = 'Error ' + r.status; try { e = (await r.json()).error || e; } catch (x) {} throw new Error(e); }
+    const blob = await r.blob();
+    const mt = /filename="?([^";]+)"?/.exec(r.headers.get('Content-Disposition') || '');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = mt ? mt[1] : 'informe.pdf';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    msg.textContent = 'PDF descargado (revisa tu carpeta de Descargas).';
+  } catch (ex) { msg.classList.add('err'); msg.textContent = ex.message; }
+  finally { btn.disabled = false; }
 }
 
 /* ---------- chat ---------- */
@@ -401,7 +631,7 @@ function renderChat() {
   const msgs = $('#msgs');
   if (!current.chat.length) {
     msgs.innerHTML = '<div class="welcome">El informe está listo. Pregunta lo que necesites: formación, cómo defienden, por dónde atacan, cómo enfrentarlos…</div>';
-    $('#chips').innerHTML = SUGGESTIONS.map(s => `<button type="button" class="chip">${esc(s)}</button>`).join('');
+    $('#chips').innerHTML = (isCombined(current) ? SUGGESTIONS_COMBINED : SUGGESTIONS).map(s => `<button type="button" class="chip">${esc(s)}</button>`).join('');
   } else {
     current.chat.forEach(c => addMsg(c.role === 'user' ? 'user' : 'bot', c.content));
   }

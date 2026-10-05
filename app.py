@@ -6,28 +6,34 @@ Uso:
     python app.py        ->  abre http://127.0.0.1:5000
 
 Flujo: formulario (link de YouTube, minutos, equipo, color) -> descarga solo ese
-tramo -> extrae frames -> Claude Vision analiza cada frame -> informe consolidado
--> chat para hacer preguntas sobre el analisis.
+tramo -> busca planos generales -> Claude Vision analiza cada frame -> informe
+consolidado -> chat. Varios analisis del mismo equipo se pueden combinar en un
+informe unico, y cualquier informe se puede exportar a PDF.
 """
 import base64
+import io
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
+import time
 import unicodedata
 import uuid
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import cv2
+import numpy as np
 from dotenv import load_dotenv
-from flask import Flask, abort, jsonify, request, send_from_directory
+from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 
 BASE = Path(__file__).resolve().parent
 load_dotenv(BASE / ".env")
@@ -41,6 +47,12 @@ PORT = int(os.getenv("PORT", "5000"))
 
 MAX_DURATION_MIN = 30
 MIN_FRAMES, MAX_FRAMES, DEFAULT_FRAMES = 3, 20, 8
+MAX_COMBINE = 8
+GRASS_MIN = float(os.getenv("GRASS_MIN", "0.40"))   # fraccion minima de cancha visible para ser "plano general"
+CANDIDATE_FACTOR, MAX_CANDIDATES = 4, 80            # se revisan ~4x los frames pedidos y se eligen los mejores
+PREVIEW_SECONDS, PREVIEW_TIMEOUT = 8, 90
+YTDLP_CMD = [sys.executable, "-m", "yt_dlp"]        # (los tests lo reemplazan)
+
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,60}$")
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com",
                  "music.youtube.com", "youtu.be"}
@@ -56,6 +68,22 @@ class FatalError(Exception):
 
 class FormError(Exception):
     """Dato invalido en el formulario."""
+
+
+class Cancelled(Exception):
+    """El usuario cancelo el analisis."""
+
+
+class Job:
+    """Estado de un trabajo en curso: permite cancelarlo y matar el proceso de descarga."""
+
+    def __init__(self):
+        self.cancel = threading.Event()
+        self.proc = None
+        self.lock = threading.Lock()
+
+
+JOBS = {}   # id de analisis -> Job (solo mientras esta en curso)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -135,8 +163,14 @@ def mark_interrupted():
             pass
 
 
+def norm(text):
+    """Para comparar nombres de equipo sin importar mayusculas, tildes ni espacios."""
+    t = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()
+    return re.sub(r"\s+", " ", t).strip().lower()
+
+
 # ═══════════════════════════════════════════════════════════════
-# YOUTUBE + FRAMES
+# YOUTUBE
 # ═══════════════════════════════════════════════════════════════
 
 def clean_youtube_url(url):
@@ -168,11 +202,6 @@ def mmss(seconds):
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
-def run_ytdlp(args):
-    return subprocess.run([sys.executable, "-m", "yt_dlp"] + args,
-                          capture_output=True, text=True, encoding="utf-8", errors="replace")
-
-
 def cookie_args():
     """Cookies de YouTube para evitar el bloqueo 'Sign in to confirm you're not a bot'.
     COOKIES_FILE (cookies.txt) tiene prioridad; si no, COOKIES_BROWSER (firefox, chrome, edge...)."""
@@ -189,22 +218,75 @@ def cookie_args():
     return []
 
 
-def download_section(url, start_min, dur_min, out_dir):
-    """Descarga SOLO el tramo pedido (solo video, max 720p; el audio no hace falta)."""
+def kill_tree(proc):
+    """Mata yt-dlp y los procesos que lanzo (ffmpeg), para que cancelar de verdad corte la descarga."""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def run_ytdlp(args, job=None, timeout=None):
+    """Ejecuta yt-dlp. Si el job se cancela (o pasa el timeout) mata el proceso y sus hijos."""
+    kw = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    if os.name != "nt":
+        kw["start_new_session"] = True      # grupo propio -> se puede matar todo el arbol
+    proc = subprocess.Popen(YTDLP_CMD + args, **kw)
+    if job is not None:
+        with job.lock:
+            job.proc = proc
+        if job.cancel.is_set():
+            kill_tree(proc)
+    out = {}
+
+    def reader():
+        out["stdout"], out["stderr"] = proc.communicate()
+
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+    deadline = time.time() + timeout if timeout else None
+    try:
+        while t.is_alive():
+            t.join(0.25)
+            if job is not None and job.cancel.is_set():
+                kill_tree(proc)
+                t.join(5)
+                raise Cancelled()
+            if deadline and time.time() > deadline:
+                kill_tree(proc)
+                t.join(5)
+                raise RuntimeError("YouTube tardo demasiado en responder. Intenta de nuevo.")
+    finally:
+        if job is not None:
+            with job.lock:
+                job.proc = None
+    return SimpleNamespace(returncode=proc.returncode, stdout=out.get("stdout", ""), stderr=out.get("stderr", ""))
+
+
+def fetch_section(url, start_s, end_s, out_dir, job=None, max_height=720, timeout=None, prefix="video"):
+    """Descarga SOLO el tramo pedido (solo video; el audio no hace falta)."""
     if shutil.which("ffmpeg") is None:
         raise FatalError("ffmpeg no esta instalado. Instalalo con:  winget install Gyan.FFmpeg  "
                          "y reinicia VS Code / la terminal.")
-    start_s, end_s = start_min * 60, (start_min + dur_min) * 60
-    for old in out_dir.glob("video.*"):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for old in out_dir.glob(prefix + ".*"):
         old.unlink()
-    base_args = [
-        "--no-playlist",
-        "-f", "bestvideo[height<=720][vcodec^=avc1]/bestvideo[height<=720][ext=mp4]/bestvideo[height<=720]/best[height<=720]",
+    h = max_height
+    fmt = f"bestvideo[height<={h}][vcodec^=avc1]/bestvideo[height<={h}][ext=mp4]/bestvideo[height<={h}]/best[height<={h}]"
+    base_args = cookie_args() + [
+        "--no-playlist", "-f", fmt,
         "--download-sections", f"*{hms(start_s)}-{hms(end_s)}",
-        "-o", str(out_dir / "video.%(ext)s"),
+        "-o", str(out_dir / (prefix + ".%(ext)s")),
         url,
     ]
-    base_args = cookie_args() + base_args
     attempts = []
     if shutil.which("node"):
         # yt-dlp reciente: node + script solver del desafio JS de YouTube (se baja de GitHub)
@@ -213,7 +295,7 @@ def download_section(url, start_min, dur_min, out_dir):
     attempts.append(base_args)
     last = None
     for args in attempts:
-        last = run_ytdlp(args)
+        last = run_ytdlp(args, job=job, timeout=timeout)
         if last.returncode == 0:
             break
         if "no such option" not in (last.stderr or "").lower():
@@ -248,22 +330,99 @@ def download_section(url, start_min, dur_min, out_dir):
                 "(tambien en la bandeja del sistema) y reintenta, o usa Firefox / un cookies.txt.\n\n"
                 + tail)
         raise RuntimeError("yt-dlp no pudo descargar el tramo:\n" + tail)
-    files = sorted(out_dir.glob("video.*"))
-    files = [f for f in files if f.suffix not in (".part", ".ytdl")]
+    files = [f for f in sorted(out_dir.glob(prefix + ".*")) if f.suffix not in (".part", ".ytdl")]
     if not files:
         raise RuntimeError("yt-dlp termino sin error pero no genero el archivo de video.")
     return files[0]
 
 
-def extract_frames(video_path, n, out_dir, start_min, dur_min):
-    """n frames repartidos uniformemente; la hora mostrada es la del VIDEO de YouTube."""
+def download_section(url, start_min, dur_min, out_dir, job=None):
+    return fetch_section(url, start_min * 60, (start_min + dur_min) * 60, out_dir, job=job)
+
+
+# ═══════════════════════════════════════════════════════════════
+# FRAMES: busqueda de planos generales
+# ═══════════════════════════════════════════════════════════════
+
+def grass_ratio(frame):
+    """Fraccion del fotograma cubierta por cancha (verde). Un plano general tiene mucha;
+    primeros planos, publico, banco y repeticiones con graficos tienen poca."""
+    h, w = frame.shape[:2]
+    small = cv2.resize(frame, (320, max(1, int(h * 320 / w))))
+    hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, (30, 35, 35), (90, 255, 255))
+    return float(mask.mean() / 255.0)
+
+
+def save_jpg(path, frame, max_w=1280, quality=85):
+    h, w = frame.shape[:2]
+    if w > max_w:
+        frame = cv2.resize(frame, (max_w, int(h * max_w / w)))
+    cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+
+
+def spread(items, n):
+    """n elementos repartidos de forma pareja a lo largo de una lista ordenada en el tiempo."""
+    if len(items) <= n:
+        return list(items)
+    idx = sorted(set(int(round(x)) for x in np.linspace(0, len(items) - 1, n)))
+    return [items[i] for i in idx]
+
+
+def extract_frames(video_path, n, out_dir, start_min, dur_min, job=None):
+    """Revisa ~4n tomas repartidas por el tramo, descarta las que no son planos generales
+    (sin llamar a la API) y se queda con n repartidas en el tiempo.
+    La hora mostrada es la del VIDEO de YouTube."""
     cap = cv2.VideoCapture(str(video_path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     total = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
     duration = total / fps if total > 0 else dur_min * 60
     if duration <= 0:
         raise RuntimeError("No pude leer el video descargado.")
+    n_cand = min(MAX_CANDIDATES, max(n, n * CANDIDATE_FACTOR))
+    cands = []
+    for i in range(n_cand):
+        if job is not None and job.cancel.is_set():
+            raise Cancelled()
+        t = (i + 0.5) * duration / n_cand
+        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+        ok, frame = cap.read()
+        if ok:
+            cands.append({"t": t, "ratio": grass_ratio(frame)})
+    if not cands:
+        raise RuntimeError("No se pudo extraer ningun frame del video.")
+    wide = [c for c in cands if c["ratio"] >= GRASS_MIN]
+    fallback = False
+    if len(wide) >= n:
+        pick = spread(wide, n)
+    elif len(wide) >= MIN_FRAMES:
+        pick = wide
+    else:  # casi no hay planos generales: se toman los 3 con mas cancha para no quedar sin nada
+        fallback = True
+        pick = sorted(sorted(cands, key=lambda c: -c["ratio"])[:MIN_FRAMES], key=lambda c: c["t"])
     out_dir.mkdir(parents=True, exist_ok=True)
+    frames = []
+    for i, c in enumerate(pick):
+        cap.set(cv2.CAP_PROP_POS_MSEC, c["t"] * 1000)
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        name = f"frame_{i:02d}.jpg"
+        save_jpg(out_dir / name, frame)
+        sec = start_min * 60 + c["t"]
+        frames.append({"file": name, "time": mmss(sec), "seconds": int(sec), "grass": round(c["ratio"], 2)})
+    cap.release()
+    if not frames:
+        raise RuntimeError("No se pudo extraer ningun frame del video.")
+    stats = {"reviewed": len(cands), "wide": len(wide), "kept": len(frames), "fallback": fallback}
+    return frames, stats
+
+
+def preview_frames(video_path, out_dir, start_s, n=3):
+    cap = cv2.VideoCapture(str(video_path))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    total = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+    duration = total / fps if total > 0 else PREVIEW_SECONDS
     frames = []
     for i in range(n):
         t = (i + 0.5) * duration / n
@@ -271,16 +430,13 @@ def extract_frames(video_path, n, out_dir, start_min, dur_min):
         ok, frame = cap.read()
         if not ok:
             continue
-        h, w = frame.shape[:2]
-        if w > 1280:
-            frame = cv2.resize(frame, (1280, int(h * 1280 / w)))
-        name = f"frame_{i:02d}.jpg"
-        cv2.imwrite(str(out_dir / name), frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        sec = start_min * 60 + t
-        frames.append({"file": name, "time": mmss(sec), "seconds": int(sec)})
+        ratio = grass_ratio(frame)
+        name = f"p{i}.jpg"
+        save_jpg(out_dir / name, frame, max_w=640, quality=80)
+        frames.append({"file": name, "time": mmss(start_s + t), "grass": round(ratio, 2), "wide": ratio >= GRASS_MIN})
     cap.release()
     if not frames:
-        raise RuntimeError("No se pudo extraer ningun frame del video.")
+        raise RuntimeError("No pude leer el video de la previsualizacion.")
     return frames
 
 
@@ -338,10 +494,66 @@ Redacta en espanol, en Markdown, con estas secciones:
 
 Reglas: cita el minuto entre parentesis cuando respaldes una afirmacion, por ejemplo (min 43:10). \
 Distingue lo observado de lo inferido: una formacion deducida de pocos planos de TV es una hipotesis, dilo. \
-No inventes nombres ni numeros que no aparezcan en las observaciones."""
+No inventes nombres ni numeros que no aparezcan en las observaciones. No uses tablas."""
+
+
+def source_blocks(m):
+    """Texto con el informe de cada fuente de un analisis combinado."""
+    matches, parts = {}, []
+    for i, s in enumerate(m["sources"], 1):
+        pk = matches.setdefault(s["clean_url"], len(matches) + 1)
+        pos = "local" if s["position"] == "local" else "visitante"
+        end = s["start_minute"] + s["duration_minutes"]
+        parts.append(f"### Fuente F{i} (partido P{pk}, {pos}, camiseta {s['color']}, "
+                     f"minutos {s['start_minute']}-{end} del video)\n{s['report']}")
+    return "\n\n".join(parts), len(matches)
+
+
+def combine_prompt(m):
+    blocks, n_matches = source_blocks(m)
+    return f"""Eres analista tactico de un cuerpo tecnico. Te paso {len(m['sources'])} informes parciales sobre \
+el mismo equipo, {m['team']}, de {n_matches} partido(s) distintos (P1, P2...; una misma P puede tener varios tramos). \
+Elabora UN informe unificado.
+
+{blocks}
+
+Redacta en espanol, en Markdown, con estas secciones:
+## Resumen
+## Lo que se repite (patrones consistentes)
+## Variaciones entre partidos o tramos
+## Formacion y estructura
+## Fase defensiva
+## Construccion y ataque
+## Jugadores clave
+## Fortalezas
+## Debilidades a explotar
+## Como enfrentarlo
+## Limitaciones del analisis
+
+Reglas: da mas peso a lo que aparece en varias fuentes y marca lo que solo aparece en una. \
+Cita la fuente y el minuto cuando respaldes algo, por ejemplo (F2, min 43:10). \
+Si las fuentes se contradicen, dilo en lugar de elegir una. No inventes datos que no esten en los informes. \
+No uses tablas. En las limitaciones indica cuantos partidos y tramos hay detras de las conclusiones."""
 
 
 def chat_system(m):
+    if m.get("kind") == "combined":
+        blocks, n_matches = source_blocks(m)
+        return f"""Eres el analista tactico de un cuerpo tecnico de futbol. Respondes en espanol, claro y practico.
+
+Contexto: informe combinado de {m['team']} a partir de {len(m['sources'])} analisis de {n_matches} partido(s) \
+(F1, F2... son las fuentes; P1, P2... los partidos).
+
+Reglas:
+- Basa las respuestas en los informes de abajo y cita la fuente y el minuto cuando puedas.
+- Si no alcanzan para responder, dilo y sugiere que tramo o partido analizar.
+- Distingue lo observado de lo inferido. No inventes jugadores, numeros ni estadisticas. No uses tablas.
+
+=== INFORME COMBINADO ===
+{m['report']}
+
+=== INFORMES DE CADA FUENTE ===
+{blocks}"""
     useful = [f for f in m["frames"] if f.get("ok")]
     obs = "\n\n".join(f"[min {f['time']}] {f['analysis']}" for f in useful)
     return f"""Eres el analista tactico de un cuerpo tecnico de futbol. Respondes en espanol, claro y practico.
@@ -352,7 +564,7 @@ Contexto: analisis de {m['team']} (camiseta {m['color']}, {m['position']}) hecho
 Reglas:
 - Basa las respuestas en el analisis de abajo y cita el minuto cuando puedas.
 - Si el analisis no alcanza para responder, dilo y sugiere que tramo analizar o que dato falta.
-- Distingue lo observado de lo inferido. No inventes jugadores, numeros ni estadisticas.
+- Distingue lo observado de lo inferido. No inventes jugadores, numeros ni estadisticas. No uses tablas.
 
 === INFORME CONSOLIDADO ===
 {m['report']}
@@ -362,7 +574,7 @@ Reglas:
 
 
 # ═══════════════════════════════════════════════════════════════
-# TRABAJO EN SEGUNDO PLANO
+# TRABAJOS EN SEGUNDO PLANO
 # ═══════════════════════════════════════════════════════════════
 
 def is_discarded(text):
@@ -371,7 +583,9 @@ def is_discarded(text):
     return re.match(r"^[\W_]*FRAME NO UTIL", plain) is not None
 
 
-def analyze_frame(m, frame, frames_dir):
+def analyze_frame(m, frame, frames_dir, job):
+    if job.cancel.is_set():
+        raise Cancelled()
     with open(frames_dir / frame["file"], "rb") as f:
         b64 = base64.standard_b64encode(f.read()).decode("utf-8")
     content = [
@@ -381,41 +595,68 @@ def analyze_frame(m, frame, frames_dir):
     return claude_text(ANALYSIS_MODEL, [{"role": "user", "content": content}], max_tokens=900)
 
 
-def run_job(aid):
-    meta = load_meta(aid)
-    d = adir(aid)
-
+def make_logger(meta):
     def log(msg, progress=None):
         meta["log"].append(f"{datetime.now():%H:%M:%S}  {msg}")
         if progress is not None:
             meta["progress"] = progress
         save_meta(meta)
 
+    def phase(name):
+        meta["phase"] = name
+        meta["phase_ts"] = time.time()
+
+    return log, phase
+
+
+def run_job(aid):
+    job = JOBS.setdefault(aid, Job())
+    meta = load_meta(aid)
+    d = adir(aid)
+    log, phase = make_logger(meta)
+
+    def check():
+        if job.cancel.is_set():
+            raise Cancelled()
+
     try:
         meta["status"] = "running"
+        phase("download")
         log(f"Descargando minutos {meta['start_minute']}-{meta['start_minute'] + meta['duration_minutes']} del video...", 5)
-        video = download_section(meta["clean_url"], meta["start_minute"], meta["duration_minutes"], d)
+        video = download_section(meta["clean_url"], meta["start_minute"], meta["duration_minutes"], d, job=job)
+        check()
 
-        log("Extrayendo frames...", 35)
+        phase("filter")
+        log("Buscando planos generales (sin gastar en la API)...", 35)
         frames_dir = d / "frames"
-        frames = extract_frames(video, meta["n_frames"], frames_dir, meta["start_minute"], meta["duration_minutes"])
+        frames, stats = extract_frames(video, meta["n_frames"], frames_dir, meta["start_minute"],
+                                       meta["duration_minutes"], job=job)
         try:
             video.unlink()  # ya no se necesita; ahorra espacio
         except OSError:
             pass
-        meta["frames"] = frames
-        log(f"{len(frames)} frames listos. Analizando con {ANALYSIS_MODEL}...", 40)
+        meta["frames"], meta["filter"] = frames, stats
+        msg = (f"Se revisaron {stats['reviewed']} tomas: {stats['wide']} son planos generales. "
+               f"Se analizan {stats['kept']} (las demas no se envian a Claude).")
+        if stats["fallback"]:
+            msg = (f"Casi no hay planos generales en este tramo ({stats['wide']} de {stats['reviewed']}); "
+                   f"se analizan los {stats['kept']} con mas cancha visible. Prueba otro minuto.")
+        elif stats["kept"] < meta["n_frames"]:
+            msg += f" Pediste {meta['n_frames']}: no hubo mas planos generales en el tramo."
+        log(msg + f" Analizando con {ANALYSIS_MODEL}...", 40)
+        check()
 
+        phase("analysis")
         done = 0
         with ThreadPoolExecutor(max_workers=3) as pool:
-            futs = {pool.submit(analyze_frame, meta, fr, frames_dir): fr for fr in frames}
+            futs = {pool.submit(analyze_frame, meta, fr, frames_dir, job): fr for fr in frames}
             for fut in as_completed(futs):
                 fr = futs[fut]
                 try:
                     text = fut.result()
                     fr["analysis"] = text
                     fr["ok"] = not is_discarded(text)
-                except FatalError:
+                except (FatalError, Cancelled):
                     for other in futs:
                         other.cancel()
                     raise
@@ -423,24 +664,79 @@ def run_job(aid):
                     fr["analysis"] = f"(no se pudo analizar este frame: {e})"
                     fr["ok"] = False
                 done += 1
-                state = "util" if fr["ok"] else "descartado"
+                state = "util" if fr["ok"] else "descartado por Claude"
                 log(f"Frame {done}/{len(frames)} (min {fr['time']}): {state}", 40 + int(50 * done / len(frames)))
+        check()
 
         useful = [f for f in sorted(frames, key=lambda x: x["seconds"]) if f["ok"]]
         if not useful:
             raise RuntimeError("Ningun frame sirvio para analisis tactico (repeticiones, primeros planos...). "
                                "Prueba otro tramo, o revisa el color de camiseta.")
+        phase("report")
         log(f"Consolidando informe con {len(useful)} frames utiles...", 92)
-        meta["report"] = claude_text(ANALYSIS_MODEL,
-                                     [{"role": "user", "content": consolidation_prompt(meta, useful)}],
-                                     max_tokens=2500)
+        report = claude_text(ANALYSIS_MODEL, [{"role": "user", "content": consolidation_prompt(meta, useful)}],
+                             max_tokens=2500)
+        check()
+        meta["report"] = report
         meta["status"] = "done"
-        meta["progress"] = 100
+        meta["phase"] = ""
         log("Listo. Ya puedes hacer preguntas en el chat.", 100)
+    except Cancelled:
+        meta["status"] = "cancelled"
+        meta["phase"] = ""
+        meta["error"] = ""
+        for f in d.glob("video.*"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        log("Cancelado por el usuario.")
     except Exception as e:
         meta["status"] = "error"
+        meta["phase"] = ""
         meta["error"] = str(e)
         save_meta(meta)
+    finally:
+        JOBS.pop(aid, None)
+
+
+def run_combined(aid):
+    job = JOBS.setdefault(aid, Job())
+    meta = load_meta(aid)
+    log, phase = make_logger(meta)
+    try:
+        meta["status"], meta["error"], meta["report"] = "running", "", ""
+        phase("report")
+        log(f"Combinando {len(meta['sources'])} analisis de {meta['team']}...", 30)
+        report = claude_text(ANALYSIS_MODEL, [{"role": "user", "content": combine_prompt(meta)}], max_tokens=3500)
+        if job.cancel.is_set():
+            raise Cancelled()
+        meta["report"] = report
+        meta["status"] = "done"
+        meta["phase"] = ""
+        log("Listo. Ya puedes hacer preguntas en el chat.", 100)
+    except Cancelled:
+        meta["status"], meta["phase"] = "cancelled", ""
+        log("Cancelado por el usuario.")
+    except Exception as e:
+        meta["status"], meta["phase"], meta["error"] = "error", "", str(e)
+        save_meta(meta)
+    finally:
+        JOBS.pop(aid, None)
+
+
+def stop_job(aid, wait=10):
+    """Cancela un trabajo en curso y espera a que termine."""
+    job = JOBS.get(aid)
+    if job is None:
+        return
+    job.cancel.set()
+    with job.lock:
+        p = job.proc
+    kill_tree(p)
+    t0 = time.time()
+    while aid in JOBS and time.time() - t0 < wait:
+        time.sleep(0.1)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -455,11 +751,21 @@ def valid_id(aid):
     return aid
 
 
-def public(meta, full=True):
-    if full:
-        return meta
+def public(meta):
     keys = ("id", "created", "team", "position", "color", "start_minute", "duration_minutes", "status")
-    return {k: meta.get(k) for k in keys}
+    out = {k: meta.get(k) for k in keys}
+    out["kind"] = meta.get("kind", "analysis")
+    out["n_sources"] = len(meta.get("sources", []))
+    return out
+
+
+def to_int(value, default):
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise FormError("Revisa los numeros del formulario (minuto, duracion, frames).")
 
 
 @app.get("/")
@@ -475,6 +781,7 @@ def config():
         "model": ANALYSIS_MODEL,
         "chat_model": CHAT_MODEL,
         "max_duration": MAX_DURATION_MIN,
+        "max_combine": MAX_COMBINE,
         "frames": {"min": MIN_FRAMES, "max": MAX_FRAMES, "default": DEFAULT_FRAMES},
     })
 
@@ -485,7 +792,7 @@ def list_analyses():
     for p in DATA.glob("*/meta.json"):
         try:
             with open(p, "r", encoding="utf-8") as f:
-                items.append(public(json.load(f), full=False))
+                items.append(public(json.load(f)))
         except Exception:
             continue
     items.sort(key=lambda m: m.get("created") or "", reverse=True)
@@ -495,15 +802,6 @@ def list_analyses():
 @app.post("/api/analisis")
 def create_analysis():
     b = request.get_json(silent=True) or {}
-
-    def to_int(value, default):
-        if value in (None, ""):
-            return default
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            raise FormError("Revisa los numeros del formulario (minuto, duracion, frames).")
-
     try:
         clean = clean_youtube_url(b.get("url"))
         team = (b.get("team") or "").strip()
@@ -527,16 +825,64 @@ def create_analysis():
 
     aid = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:4]}"
     meta = {
-        "id": aid, "created": datetime.now().isoformat(timespec="seconds"),
+        "id": aid, "kind": "analysis", "created": datetime.now().isoformat(timespec="seconds"),
         "url": b.get("url"), "clean_url": clean,
         "team": team[:60], "position": position, "color": color[:40],
         "rival_color": (b.get("rival_color") or "").strip()[:40],
         "start_minute": start, "duration_minutes": dur, "n_frames": n,
-        "model": ANALYSIS_MODEL, "status": "queued", "progress": 0, "log": [],
-        "frames": [], "report": "", "chat": [], "error": "",
+        "model": ANALYSIS_MODEL, "status": "queued", "progress": 0, "phase": "", "phase_ts": 0,
+        "log": [], "frames": [], "filter": None, "report": "", "chat": [], "error": "",
     }
     save_meta(meta)
+    JOBS[aid] = Job()
     threading.Thread(target=run_job, args=(aid,), daemon=True).start()
+    return jsonify({"id": aid}), 201
+
+
+@app.post("/api/combinar")
+def combine():
+    b = request.get_json(silent=True) or {}
+    ids = b.get("ids")
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        return jsonify({"error": "Selecciona los analisis a combinar."}), 400
+    ids = list(dict.fromkeys(ids))
+    if len(ids) < 2:
+        return jsonify({"error": "Selecciona al menos 2 analisis para combinar."}), 400
+    if len(ids) > MAX_COMBINE:
+        return jsonify({"error": f"Puedes combinar hasta {MAX_COMBINE} analisis a la vez."}), 400
+    sources = []
+    for i in ids:
+        m = load_meta(i) if ID_RE.match(i) else None
+        if m is None:
+            return jsonify({"error": "Uno de los analisis seleccionados ya no existe."}), 404
+        if m.get("kind") == "combined":
+            return jsonify({"error": "No se puede combinar un informe que ya es combinado."}), 400
+        if m["status"] != "done":
+            return jsonify({"error": f"El analisis de {m['team']} (min {m['start_minute']}) aun no termino."}), 400
+        sources.append(m)
+    teams = {norm(m["team"]) for m in sources}
+    if len(teams) > 1:
+        names = ", ".join(sorted({m["team"] for m in sources}))
+        return jsonify({"error": f"Solo se pueden combinar analisis del mismo equipo (elegiste: {names})."}), 400
+    sources.sort(key=lambda m: m["created"])
+    first = sources[0]
+    aid = f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:4]}"
+    meta = {
+        "id": aid, "kind": "combined", "created": datetime.now().isoformat(timespec="seconds"),
+        "url": "", "clean_url": "", "team": first["team"], "position": first["position"], "color": first["color"],
+        "rival_color": "", "start_minute": 0, "duration_minutes": 0, "n_frames": 0,
+        "model": ANALYSIS_MODEL, "status": "queued", "progress": 0, "phase": "", "phase_ts": 0,
+        "log": [], "frames": [], "filter": None, "report": "", "chat": [], "error": "",
+        "sources": [{
+            "id": m["id"], "created": m["created"], "team": m["team"], "position": m["position"],
+            "color": m["color"], "clean_url": m["clean_url"], "start_minute": m["start_minute"],
+            "duration_minutes": m["duration_minutes"], "n_useful": sum(1 for f in m["frames"] if f.get("ok")),
+            "report": m["report"],
+        } for m in sources],
+    }
+    save_meta(meta)
+    JOBS[aid] = Job()
+    threading.Thread(target=run_combined, args=(aid,), daemon=True).start()
     return jsonify({"id": aid}), 201
 
 
@@ -548,7 +894,36 @@ def get_analysis(aid):
 @app.delete("/api/analisis/<aid>")
 def delete_analysis(aid):
     valid_id(aid)
+    stop_job(aid)
     shutil.rmtree(adir(aid), ignore_errors=True)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/analisis/<aid>/cancelar")
+def cancel(aid):
+    valid_id(aid)
+    job = JOBS.get(aid)
+    if job is None:
+        return jsonify({"error": "No hay un analisis en curso para cancelar."}), 409
+    job.cancel.set()
+    with job.lock:
+        p = job.proc
+    kill_tree(p)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/analisis/<aid>/regenerar")
+def regenerate(aid):
+    """Vuelve a generar un informe combinado que fallo o se cancelo."""
+    meta = load_meta(valid_id(aid))
+    if meta.get("kind") != "combined":
+        return jsonify({"error": "Solo aplica a informes combinados."}), 400
+    if meta["status"] not in ("error", "cancelled"):
+        return jsonify({"error": "El informe ya esta en curso o terminado."}), 409
+    meta.update(status="queued", error="", progress=0, log=[])
+    save_meta(meta)
+    JOBS[aid] = Job()
+    threading.Thread(target=run_combined, args=(aid,), daemon=True).start()
     return jsonify({"ok": True})
 
 
@@ -578,14 +953,83 @@ def chat(aid):
     return jsonify({"answer": answer})
 
 
+@app.get("/api/analisis/<aid>/pdf")
+def export_pdf(aid):
+    meta = load_meta(valid_id(aid))
+    if meta["status"] != "done":
+        return jsonify({"error": "El analisis todavia no termino."}), 409
+    with_frames = request.args.get("frames", "1") == "1"
+    with_chat = request.args.get("chat", "0") == "1"
+    try:
+        import pdf_export
+        data = pdf_export.build_pdf(meta, adir(aid) / "frames", with_frames, with_chat)
+    except ImportError:
+        return jsonify({"error": "Falta la libreria reportlab. Ejecuta:  python -m pip install -r requirements.txt"}), 500
+    except Exception as e:
+        return jsonify({"error": f"No pude crear el PDF: {e}"}), 500
+    slug = re.sub(r"[^a-z0-9]+", "_", norm(meta["team"])).strip("_") or "equipo"
+    name = f"informe_{slug}_{datetime.now():%Y%m%d}.pdf"
+    return send_file(io.BytesIO(data), mimetype="application/pdf", as_attachment=True, download_name=name)
+
+
 @app.get("/media/<aid>/<path:name>")
 def media(aid, name):
     valid_id(aid)
     return send_from_directory(adir(aid) / "frames", name)
 
 
+# ---------- previsualizacion ----------
+
+PREVIEWS = DATA / "_previews"
+
+
+def cleanup_previews(max_age=3600):
+    if not PREVIEWS.exists():
+        return
+    now = time.time()
+    for d in PREVIEWS.iterdir():
+        try:
+            if now - d.stat().st_mtime > max_age:
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass
+
+
+@app.post("/api/preview")
+def preview():
+    b = request.get_json(silent=True) or {}
+    try:
+        clean = clean_youtube_url(b.get("url"))
+        start = to_int(b.get("start_minute"), 0)
+        if start < 0:
+            raise FormError("El minuto de inicio no puede ser negativo.")
+    except (FormError, ValueError) as e:
+        return jsonify({"error": str(e)}), 400
+    cleanup_previews()
+    token = uuid.uuid4().hex[:12]
+    d = PREVIEWS / token
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        video = fetch_section(clean, start * 60, start * 60 + PREVIEW_SECONDS, d, max_height=480,
+                              timeout=PREVIEW_TIMEOUT, prefix="clip")
+        frames = preview_frames(video, d, start * 60)
+        video.unlink()
+    except Exception as e:
+        shutil.rmtree(d, ignore_errors=True)
+        return jsonify({"error": str(e)}), 502
+    return jsonify({"token": token, "frames": frames})
+
+
+@app.get("/preview/<token>/<name>")
+def preview_media(token, name):
+    if not ID_RE.match(token):
+        abort(404)
+    return send_from_directory(PREVIEWS / token, name)
+
+
 if __name__ == "__main__":
     mark_interrupted()
+    shutil.rmtree(PREVIEWS, ignore_errors=True)
     url = f"http://127.0.0.1:{PORT}"
     print(f"\n  Analizador de rivales -> {url}\n  (Ctrl+C para detener)\n")
     if os.getenv("NO_BROWSER") != "1":

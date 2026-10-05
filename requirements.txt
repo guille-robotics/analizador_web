@@ -3,3 +3,4 @@ anthropic>=0.40
 opencv-python>=4.8
 yt-dlp>=2025.1.1
 python-dotenv>=1.0
+reportlab>=4.0
