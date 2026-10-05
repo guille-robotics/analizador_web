@@ -45,12 +45,14 @@ ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "claude-haiku-4-5")
 CHAT_MODEL = os.getenv("CHAT_MODEL", "claude-haiku-4-5")
 PORT = int(os.getenv("PORT", "5000"))
 
-MAX_DURATION_MIN = 30
-MIN_FRAMES, MAX_FRAMES, DEFAULT_FRAMES = 3, 20, 8
+MAX_DURATION_MIN = int(os.getenv("MAX_DURATION", "120"))   # un partido completo cabe
+MIN_FRAMES, MAX_FRAMES = 3, 200
+FRAMES_PER_MIN, MIN_AUTO_FRAMES = 2, 8              # modo automatico: 1 frame cada 30 s de video
+ANALYSIS_WORKERS = max(1, int(os.getenv("ANALYSIS_WORKERS", "3")))   # frames analizados en paralelo
+BLOCK_SIZE, LONG_THRESHOLD = 12, 24                 # >24 frames utiles: se resume por bloques de ~12 y luego se unifica
 MAX_COMBINE = 8
 GRASS_MIN = float(os.getenv("GRASS_MIN", "0.40"))   # fraccion minima de cancha visible para ser "plano general"
-CANDIDATE_FACTOR, MAX_CANDIDATES = 4, 80            # se revisan ~4x los frames pedidos y se eligen los mejores
-PREVIEW_SECONDS, PREVIEW_TIMEOUT = 8, 90
+CANDIDATE_FACTOR, MAX_CANDIDATES = 4, 800           # se revisan ~4x los frames pedidos y se eligen los mejores
 YTDLP_CMD = [sys.executable, "-m", "yt_dlp"]        # (los tests lo reemplazan)
 
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,60}$")
@@ -97,7 +99,8 @@ def get_client():
         if not key:
             raise FatalError("Falta ANTHROPIC_API_KEY. Crea el archivo .env (copia .env.example) y pega tu clave.")
         import anthropic
-        _client = anthropic.Anthropic(api_key=key)
+        # reintentos con espera creciente: en analisis largos un limite de velocidad puntual no debe perder frames
+        _client = anthropic.Anthropic(api_key=key, max_retries=6)
     return _client
 
 
@@ -418,26 +421,9 @@ def extract_frames(video_path, n, out_dir, start_min, dur_min, job=None):
     return frames, stats
 
 
-def preview_frames(video_path, out_dir, start_s, n=3):
-    cap = cv2.VideoCapture(str(video_path))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    total = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
-    duration = total / fps if total > 0 else PREVIEW_SECONDS
-    frames = []
-    for i in range(n):
-        t = (i + 0.5) * duration / n
-        cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
-        ok, frame = cap.read()
-        if not ok:
-            continue
-        ratio = grass_ratio(frame)
-        name = f"p{i}.jpg"
-        save_jpg(out_dir / name, frame, max_w=640, quality=80)
-        frames.append({"file": name, "time": mmss(start_s + t), "grass": round(ratio, 2), "wide": ratio >= GRASS_MIN})
-    cap.release()
-    if not frames:
-        raise RuntimeError("No pude leer el video de la previsualizacion.")
-    return frames
+def auto_frames(duration_min):
+    """Cuantos frames analizar cuando el usuario no lo fija: 1 cada 30 s de video."""
+    return max(MIN_AUTO_FRAMES, min(MAX_FRAMES, int(duration_min * FRAMES_PER_MIN)))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -495,6 +481,82 @@ Redacta en espanol, en Markdown, con estas secciones:
 Reglas: cita el minuto entre parentesis cuando respaldes una afirmacion, por ejemplo (min 43:10). \
 Distingue lo observado de lo inferido: una formacion deducida de pocos planos de TV es una hipotesis, dilo. \
 No inventes nombres ni numeros que no aparezcan en las observaciones. No uses tablas."""
+
+
+def block_prompt(m, chunk):
+    obs = "\n\n".join(f"[min {f['time']}]\n{f['analysis']}" for f in chunk)
+    return f"""Eres analista tactico de un cuerpo tecnico. RESUMEN DE BLOQUE: te paso {len(chunk)} observaciones de \
+fotogramas del equipo {m['team']} (camiseta {m['color']}, {m['position']}) entre los minutos {chunk[0]['time']} y \
+{chunk[-1]['time']} del video.
+
+OBSERVACIONES:
+{obs}
+
+Resume SOLO lo que muestran, en espanol y Markdown, en 250 a 400 palabras, con estos puntos:
+- Formacion y estructura: cual aparece y en cuantas observaciones (por ejemplo "4-3-3 en 6 de 9")
+- Defensa: bloque, altura de la linea, presion, espacios
+- Construccion y ataque
+- Jugadores identificables: solo numeros de camiseta legibles
+- Cambios dentro del bloque o situaciones raras
+- Debilidades visibles
+Cita los minutos entre parentesis. Distingue lo observado de lo inferido. No inventes nada. No uses tablas."""
+
+
+def long_consolidation_prompt(m, blocks):
+    txt = "\n\n".join(f"### Bloque {i}: minutos {b['from']} a {b['to']} ({b['n']} frames)\n{b['summary']}"
+                     for i, b in enumerate(blocks, 1))
+    return f"""Eres analista tactico de un cuerpo tecnico. A partir de {len(blocks)} resumenes por bloque de tiempo \
+de un tramo largo de partido, elabora el informe del equipo {m['team']} (camiseta {m['color']}, {m['position']}).
+
+RESUMENES POR BLOQUE:
+{txt}
+
+Redacta en espanol, en Markdown, con estas secciones:
+## Resumen
+## Evolucion durante el tramo
+## Formacion y estructura
+## Fase defensiva
+## Construccion y ataque
+## Jugadores clave
+## Fortalezas
+## Debilidades a explotar
+## Como enfrentarlo
+## Limitaciones del analisis
+
+Reglas: da mas peso a lo que se repite en varios bloques y marca con su minuto los cambios entre bloques \
+(formacion, intensidad de presion, altura de linea). Cita minutos entre parentesis, por ejemplo (min 43:10). \
+Distingue lo observado de lo inferido: una formacion deducida de planos de TV es una hipotesis, dilo. \
+No inventes nombres ni numeros que no aparezcan en los resumenes. No uses tablas."""
+
+
+def summarize_blocks(meta, useful, job, log):
+    """Informe de un tramo largo: resume por bloques de tiempo (en paralelo) y luego los unifica.
+    Resumir por partes evita que se pierda detalle cuando hay decenas de observaciones."""
+    k = -(-len(useful) // BLOCK_SIZE)                 # techo
+    size = -(-len(useful) // k)
+    chunks = [useful[i:i + size] for i in range(0, len(useful), size)]
+    results = [None] * len(chunks)
+
+    def work(i):
+        if job.cancel.is_set():
+            raise Cancelled()
+        return claude_text(ANALYSIS_MODEL, [{"role": "user", "content": block_prompt(meta, chunks[i])}],
+                           max_tokens=1300)
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=min(ANALYSIS_WORKERS, len(chunks))) as pool:
+        futs = {pool.submit(work, i): i for i in range(len(chunks))}
+        for fut in as_completed(futs):
+            try:
+                results[futs[fut]] = fut.result()
+            except (FatalError, Cancelled):
+                for other in futs:
+                    other.cancel()
+                raise
+            done += 1
+            log(f"Resumen por bloques: {done}/{len(chunks)}", 90 + int(6 * done / len(chunks)))
+    return [{"from": c[0]["time"], "to": c[-1]["time"], "n": len(c), "summary": r}
+            for c, r in zip(chunks, results)]
 
 
 def source_blocks(m):
@@ -556,6 +618,13 @@ Reglas:
 {blocks}"""
     useful = [f for f in m["frames"] if f.get("ok")]
     obs = "\n\n".join(f"[min {f['time']}] {f['analysis']}" for f in useful)
+    blocks = m.get("blocks") or []
+    blocks_txt = ""
+    if blocks:
+        blocks_txt = "\n\n=== RESUMENES POR BLOQUE DE TIEMPO ===\n" + "\n\n".join(
+            f"[Bloque {i}: min {b['from']} a {b['to']}]\n{b['summary']}" for i, b in enumerate(blocks, 1))
+    if len(obs) > 280_000:   # ~70k tokens: en tramos enormes se deja solo el resumen por bloques
+        obs = "(omitidas por tamano: usa el informe y los resumenes por bloque)"
     return f"""Eres el analista tactico de un cuerpo tecnico de futbol. Respondes en espanol, claro y practico.
 
 Contexto: analisis de {m['team']} (camiseta {m['color']}, {m['position']}) hecho a partir de fotogramas del video \
@@ -567,7 +636,7 @@ Reglas:
 - Distingue lo observado de lo inferido. No inventes jugadores, numeros ni estadisticas. No uses tablas.
 
 === INFORME CONSOLIDADO ===
-{m['report']}
+{m['report']}{blocks_txt}
 
 === OBSERVACIONES POR FRAME ===
 {obs}"""
@@ -642,13 +711,14 @@ def run_job(aid):
             msg = (f"Casi no hay planos generales en este tramo ({stats['wide']} de {stats['reviewed']}); "
                    f"se analizan los {stats['kept']} con mas cancha visible. Prueba otro minuto.")
         elif stats["kept"] < meta["n_frames"]:
-            msg += f" Pediste {meta['n_frames']}: no hubo mas planos generales en el tramo."
+            msg += f" Se pedian {meta['n_frames']}: no hubo mas planos generales en el tramo."
         log(msg + f" Analizando con {ANALYSIS_MODEL}...", 40)
         check()
 
         phase("analysis")
         done = 0
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        last_err = ""
+        with ThreadPoolExecutor(max_workers=ANALYSIS_WORKERS) as pool:
             futs = {pool.submit(analyze_frame, meta, fr, frames_dir, job): fr for fr in frames}
             for fut in as_completed(futs):
                 fr = futs[fut]
@@ -660,22 +730,38 @@ def run_job(aid):
                     for other in futs:
                         other.cancel()
                     raise
-                except Exception as e:  # fallo puntual de un frame
+                except Exception as e:  # fallo puntual de un frame (los reintentos de la API ya se agotaron)
+                    last_err = str(e)
                     fr["analysis"] = f"(no se pudo analizar este frame: {e})"
                     fr["ok"] = False
+                    fr["failed"] = True
                 done += 1
-                state = "util" if fr["ok"] else "descartado por Claude"
+                state = "util" if fr["ok"] else ("FALLO" if fr.get("failed") else "descartado por Claude")
                 log(f"Frame {done}/{len(frames)} (min {fr['time']}): {state}", 40 + int(50 * done / len(frames)))
         check()
 
+        failed = [f for f in frames if f.get("failed")]
+        if failed and len(failed) == len(frames):
+            raise RuntimeError(f"No se pudo analizar ningun frame. Ultimo error: {last_err}")
+        if failed:
+            log(f"ATENCION: {len(failed)} de {len(frames)} frames no se pudieron analizar ({last_err[:120]}). "
+                f"El informe se hace con los demas; conviene repetir el analisis si son muchos.")
         useful = [f for f in sorted(frames, key=lambda x: x["seconds"]) if f["ok"]]
         if not useful:
             raise RuntimeError("Ningun frame sirvio para analisis tactico (repeticiones, primeros planos...). "
                                "Prueba otro tramo, o revisa el color de camiseta.")
         phase("report")
-        log(f"Consolidando informe con {len(useful)} frames utiles...", 92)
-        report = claude_text(ANALYSIS_MODEL, [{"role": "user", "content": consolidation_prompt(meta, useful)}],
-                             max_tokens=2500)
+        if len(useful) > LONG_THRESHOLD:
+            log(f"Tramo largo ({len(useful)} frames utiles): resumiendo por bloques de tiempo antes del informe final...", 90)
+            meta["blocks"] = summarize_blocks(meta, useful, job, log)
+            check()
+            log("Redactando el informe final a partir de los bloques...", 97)
+            prompt = long_consolidation_prompt(meta, meta["blocks"])
+            report = claude_text(ANALYSIS_MODEL, [{"role": "user", "content": prompt}], max_tokens=4000)
+        else:
+            log(f"Consolidando informe con {len(useful)} frames utiles...", 92)
+            report = claude_text(ANALYSIS_MODEL, [{"role": "user", "content": consolidation_prompt(meta, useful)}],
+                                 max_tokens=2500)
         check()
         meta["report"] = report
         meta["status"] = "done"
@@ -782,7 +868,7 @@ def config():
         "chat_model": CHAT_MODEL,
         "max_duration": MAX_DURATION_MIN,
         "max_combine": MAX_COMBINE,
-        "frames": {"min": MIN_FRAMES, "max": MAX_FRAMES, "default": DEFAULT_FRAMES},
+        "frames": {"min": MIN_FRAMES, "max": MAX_FRAMES, "per_min": FRAMES_PER_MIN, "min_auto": MIN_AUTO_FRAMES},
     })
 
 
@@ -813,13 +899,16 @@ def create_analysis():
         position = b.get("position") if b.get("position") in ("local", "visitante") else "local"
         start = to_int(b.get("start_minute"), 0)
         dur = to_int(b.get("duration_minutes"), 10)
-        n = to_int(b.get("n_frames"), DEFAULT_FRAMES)
+        n = to_int(b.get("n_frames"), None)       # vacio = automatico
         if start < 0:
             raise FormError("El minuto de inicio no puede ser negativo.")
         if not 1 <= dur <= MAX_DURATION_MIN:
             raise FormError(f"La duracion debe estar entre 1 y {MAX_DURATION_MIN} minutos.")
-        if not MIN_FRAMES <= n <= MAX_FRAMES:
-            raise FormError(f"Los frames deben ser entre {MIN_FRAMES} y {MAX_FRAMES}.")
+        n_auto = n is None
+        if n_auto:
+            n = auto_frames(dur)
+        elif not MIN_FRAMES <= n <= MAX_FRAMES:
+            raise FormError(f"Los frames deben ser entre {MIN_FRAMES} y {MAX_FRAMES} (o deja el campo vacio para automatico).")
     except (FormError, ValueError) as e:
         return jsonify({"error": str(e)}), 400
 
@@ -829,9 +918,9 @@ def create_analysis():
         "url": b.get("url"), "clean_url": clean,
         "team": team[:60], "position": position, "color": color[:40],
         "rival_color": (b.get("rival_color") or "").strip()[:40],
-        "start_minute": start, "duration_minutes": dur, "n_frames": n,
+        "start_minute": start, "duration_minutes": dur, "n_frames": n, "n_frames_auto": n_auto,
         "model": ANALYSIS_MODEL, "status": "queued", "progress": 0, "phase": "", "phase_ts": 0,
-        "log": [], "frames": [], "filter": None, "report": "", "chat": [], "error": "",
+        "log": [], "frames": [], "filter": None, "blocks": [], "report": "", "chat": [], "error": "",
     }
     save_meta(meta)
     JOBS[aid] = Job()
@@ -978,58 +1067,8 @@ def media(aid, name):
     return send_from_directory(adir(aid) / "frames", name)
 
 
-# ---------- previsualizacion ----------
-
-PREVIEWS = DATA / "_previews"
-
-
-def cleanup_previews(max_age=3600):
-    if not PREVIEWS.exists():
-        return
-    now = time.time()
-    for d in PREVIEWS.iterdir():
-        try:
-            if now - d.stat().st_mtime > max_age:
-                shutil.rmtree(d, ignore_errors=True)
-        except OSError:
-            pass
-
-
-@app.post("/api/preview")
-def preview():
-    b = request.get_json(silent=True) or {}
-    try:
-        clean = clean_youtube_url(b.get("url"))
-        start = to_int(b.get("start_minute"), 0)
-        if start < 0:
-            raise FormError("El minuto de inicio no puede ser negativo.")
-    except (FormError, ValueError) as e:
-        return jsonify({"error": str(e)}), 400
-    cleanup_previews()
-    token = uuid.uuid4().hex[:12]
-    d = PREVIEWS / token
-    d.mkdir(parents=True, exist_ok=True)
-    try:
-        video = fetch_section(clean, start * 60, start * 60 + PREVIEW_SECONDS, d, max_height=480,
-                              timeout=PREVIEW_TIMEOUT, prefix="clip")
-        frames = preview_frames(video, d, start * 60)
-        video.unlink()
-    except Exception as e:
-        shutil.rmtree(d, ignore_errors=True)
-        return jsonify({"error": str(e)}), 502
-    return jsonify({"token": token, "frames": frames})
-
-
-@app.get("/preview/<token>/<name>")
-def preview_media(token, name):
-    if not ID_RE.match(token):
-        abort(404)
-    return send_from_directory(PREVIEWS / token, name)
-
-
 if __name__ == "__main__":
     mark_interrupted()
-    shutil.rmtree(PREVIEWS, ignore_errors=True)
     url = f"http://127.0.0.1:{PORT}"
     print(f"\n  Analizador de rivales -> {url}\n  (Ctrl+C para detener)\n")
     if os.getenv("NO_BROWSER") != "1":

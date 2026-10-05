@@ -89,15 +89,6 @@
   .formerr { color:var(--err); margin:12px 0 0; min-height:1.2em; font-weight:600; }
   .actions { margin-top:18px; display:flex; align-items:center; gap:14px; }
 
-  .previewbox { margin-top:16px; padding-top:14px; border-top:1px dashed var(--line); }
-  .previewbox .prow { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-  #previewMsg { white-space:pre-wrap; margin:0; }
-  #previewMsg.err { color:var(--err); font-weight:600; }
-  .pframes { display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-top:12px; }
-  .pframes figure { margin:0; }
-  .pframes img { width:100%; display:block; border-radius:8px; aspect-ratio:16/9; object-fit:cover; background:#000; }
-  .pframes figcaption { font-size:12.5px; color:var(--muted); margin-top:3px; }
-  .pframes .nowide { color:var(--warn); }
 
   #viewAnalysis { flex:1; min-height:0; display:flex; flex-direction:column; gap:12px; }
   .head h2 { margin:0; font-size:22px; }
@@ -148,6 +139,8 @@
   #pdfMsg { margin:0; }
   #pdfMsg.err { color:var(--err); font-weight:600; }
 
+  .blocks summary { cursor:pointer; color:var(--accent); }
+  .blocks h4 { margin:16px 0 4px; font-size:15px; }
   .filternote { background:var(--soft); border-radius:10px; padding:9px 14px; margin-bottom:14px; font-size:14px; }
   .frames { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px; }
   .fcard { background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
@@ -165,7 +158,6 @@
     .list { max-height:180px; flex:none; }
     .main { height:auto; overflow:visible; padding:16px; }
     .grid { grid-template-columns:1fr; }
-    .pframes { grid-template-columns:1fr; }
     .chat { height:70vh; } #viewAnalysis { min-height:70vh; }
   }
 </style>
@@ -224,21 +216,14 @@
             </div>
             <div>
               <label for="f_duration_minutes">Duración <small>(minutos)</small></label>
-              <input id="f_duration_minutes" type="number" min="1" max="30" step="1" value="10">
+              <input id="f_duration_minutes" type="number" min="1" max="120" step="1" value="10">
+              <div class="hint" id="durHint"></div>
             </div>
-            <div>
-              <label for="f_n_frames">Frames a analizar</label>
-              <input id="f_n_frames" type="number" min="3" max="20" step="1" value="8">
-              <div class="hint">Solo se envían planos generales de la cancha. Más frames = más detalle y más costo.</div>
+            <div class="full">
+              <label for="f_n_frames">Frames a analizar <small>(déjalo vacío para automático)</small></label>
+              <input id="f_n_frames" type="number" min="3" max="200" step="1" placeholder="Automático" style="max-width:240px">
+              <div class="hint" id="framesHint"></div>
             </div>
-          </div>
-
-          <div class="previewbox">
-            <div class="prow">
-              <button type="button" class="btn" id="btnPreview">Previsualizar el video en ese minuto</button>
-              <p class="hint" id="previewMsg">Descarga 8 segundos para que confirmes el color de camiseta y el minuto.</p>
-            </div>
-            <div class="pframes" id="pframes"></div>
           </div>
 
           <div class="hint" style="margin-top:14px">
@@ -272,7 +257,7 @@ const SUGGESTIONS = ['¿Qué formación usa?', '¿Cómo defiende?', '¿Cómo con
 const SUGGESTIONS_COMBINED = ['¿Qué patrones se repiten en todas las fuentes?', '¿Qué cambió entre partidos?',
                      '¿Cuál es su debilidad más consistente?', '¿Cómo lo enfrentamos?'];
 let cfg = {}, current = null, pollTimer = null, tab = 'chat', chatBusy = false;
-let items = [], combineMode = false, selected = new Set(), cancellingId = null, previewCtl = null;
+let items = [], combineMode = false, selected = new Set(), cancellingId = null;
 
 /* ---------- utilidades ---------- */
 async function api(path, opts) {
@@ -320,7 +305,7 @@ async function init() {
   if (cfg.ffmpeg === false) msgs.push('No encuentro <code>ffmpeg</code>: instálalo con <code>winget install Gyan.FFmpeg</code> y reinicia la terminal.');
   $('#banner').innerHTML = msgs.map(m => `<div class="banner" style="margin-bottom:8px">${m}</div>`).join('');
   if (cfg.max_duration) $('#f_duration_minutes').max = cfg.max_duration;
-  if (cfg.frames) { $('#f_n_frames').min = cfg.frames.min; $('#f_n_frames').max = cfg.frames.max; $('#f_n_frames').value = cfg.frames.default; }
+  if (cfg.frames) { $('#f_n_frames').min = cfg.frames.min; $('#f_n_frames').max = cfg.frames.max; }
   await loadList();
   showNew();
 }
@@ -415,9 +400,29 @@ function showNew(prefill) {
   const v = prefill || loadSaved();
   FIELDS.forEach(k => { const el = $('#f_' + k); if (el && v[k] !== undefined && v[k] !== null) el.value = v[k]; });
   $('#formError').textContent = '';
-  clearPreview();
+  updateHints();
   loadList();
 }
+
+/* Avisos del formulario: cuántos frames se analizarán y cuánto puede tardar */
+function autoFrames(d) {
+  const f = cfg.frames || {};
+  return Math.max(f.min_auto || 8, Math.min(f.max || 200, Math.floor(d * (f.per_min || 2))));
+}
+function updateHints() {
+  const d = parseInt($('#f_duration_minutes').value, 10), raw = $('#f_n_frames').value.trim();
+  const dur = $('#durHint'), fr = $('#framesHint');
+  let t = `Un tiempo completo dura unos 45–50 min. Máximo ${cfg.max_duration || 120} min.`;
+  if (d >= 20) t += ' Descargar un tramo largo puede tardar varios minutos según tu conexión.';
+  dur.textContent = t;
+  if (!d || d < 1) { fr.textContent = ''; return; }
+  const n = raw ? parseInt(raw, 10) : autoFrames(d);
+  let h = raw ? `Se analizarán ${n} frames.` : `Automático: unos ${n} frames (1 cada 30 segundos de video).`;
+  h += ' Solo se envían planos generales de la cancha.';
+  if (n >= 40) h += ' Con tantos frames el análisis tarda varios minutos; puedes cancelarlo cuando quieras.';
+  fr.textContent = h;
+}
+['#f_duration_minutes', '#f_n_frames'].forEach(s => $(s).addEventListener('input', updateHints));
 $('#form').addEventListener('submit', async e => {
   e.preventDefault();
   const body = {}; FIELDS.forEach(k => body[k] = $('#f_' + k).value);
@@ -428,41 +433,6 @@ $('#form').addEventListener('submit', async e => {
     await openAnalysis(r.id);
   } catch (ex) { $('#formError').textContent = ex.message; }
   finally { btn.disabled = false; }
-});
-
-/* ---------- previsualización ---------- */
-const PREVIEW_HINT = 'Descarga 8 segundos para que confirmes el color de camiseta y el minuto.';
-function setPreviewMsg(text, isErr) { const el = $('#previewMsg'); el.textContent = text; el.classList.toggle('err', !!isErr); }
-function clearPreview() {
-  if (previewCtl) previewCtl.abort();
-  $('#pframes').innerHTML = ''; setPreviewMsg(PREVIEW_HINT);
-}
-['#f_url', '#f_start_minute'].forEach(s => $(s).addEventListener('input', () => { if ($('#pframes').innerHTML || previewCtl) clearPreview(); }));
-
-$('#btnPreview').addEventListener('click', async () => {
-  const btn = $('#btnPreview');
-  if (previewCtl) { previewCtl.abort(); return; }          // segundo clic = cancelar
-  const url = $('#f_url').value.trim();
-  if (!url) { setPreviewMsg('Pega primero el enlace de YouTube.', true); return; }
-  const ctl = previewCtl = new AbortController();
-  btn.textContent = 'Cancelar previsualización';
-  $('#pframes').innerHTML = '';
-  setPreviewMsg('Descargando 8 segundos del video… puede tardar unos segundos.');
-  try {
-    const r = await api('/api/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctl.signal,
-      body: JSON.stringify({ url, start_minute: $('#f_start_minute').value }) });
-    $('#pframes').innerHTML = r.frames.map(f => `<figure><img src="/preview/${esc(r.token)}/${esc(f.file)}" alt="min ${esc(f.time)}">
-      <figcaption class="${f.wide ? '' : 'nowide'}">min ${esc(f.time)} · ${f.wide ? 'plano general' : 'no es plano general'}</figcaption></figure>`).join('');
-    const wide = r.frames.filter(f => f.wide).length;
-    setPreviewMsg(wide ? 'Confirma que el equipo a analizar viste del color que escribiste.'
-                       : 'Ninguna toma parece un plano general. Prueba con otro minuto (en la transmisión puede haber una repetición o un primer plano).');
-  } catch (ex) {
-    if (ex.name === 'AbortError') setPreviewMsg('Previsualización cancelada.');
-    else setPreviewMsg(ex.message, true);
-  } finally {
-    if (previewCtl === ctl) previewCtl = null;
-    btn.textContent = 'Previsualizar el video en ese minuto';
-  }
 });
 
 /* ---------- vista de análisis ---------- */
@@ -534,7 +504,7 @@ async function retry(m) {
     catch (e) { alert(e.message); }
   } else {
     showNew({ url: m.url, team: m.team, position: m.position, color: m.color, rival_color: m.rival_color,
-              start_minute: m.start_minute, duration_minutes: m.duration_minutes, n_frames: m.n_frames });
+              start_minute: m.start_minute, duration_minutes: m.duration_minutes, n_frames: m.n_frames_auto ? '' : m.n_frames });
   }
 }
 
@@ -572,7 +542,11 @@ function renderTab() {
         <label class="chk"><input type="checkbox" id="pdfChat" ${hasChat ? '' : 'disabled'}> Incluir la conversación</label>
         <button class="btn" id="btnCopy">Copiar informe</button>
         <p class="hint" id="pdfMsg"></p></div>
-      <div class="card md">${md(m.report)}</div>`;
+      <div class="card md">${md(m.report)}</div>` + ((m.blocks || []).length
+        ? `<details class="card blocks" style="margin-top:12px"><summary><strong>Resumen por bloques de tiempo (${m.blocks.length})</strong>
+             <span class="hint"> · de aquí sale el informe</span></summary>` +
+          m.blocks.map((b, i) => `<h4>Bloque ${i + 1}: min ${esc(b.from)} a ${esc(b.to)} (${b.n} frames)</h4><div class="md">${md(b.summary)}</div>`).join('') +
+          '</details>' : '');
     $('#btnCopy').onclick = async e => { try { await navigator.clipboard.writeText(m.report); e.target.textContent = 'Copiado'; } catch (x) { e.target.textContent = 'No se pudo copiar'; } };
     $('#btnPdf').onclick = downloadPdf;
   } else if (tab === 'frames') {
@@ -582,7 +556,7 @@ function renderTab() {
     pane.innerHTML = note + '<div class="frames">' + m.frames.map(fr => `
       <div class="fcard">
         <a href="/media/${esc(m.id)}/${esc(fr.file)}" target="_blank"><img loading="lazy" src="/media/${esc(m.id)}/${esc(fr.file)}" alt="frame ${esc(fr.time)}"></a>
-        <div class="fb"><strong>min ${esc(fr.time)}</strong><span class="badge ${fr.ok ? '' : 'off'}">${fr.ok ? 'útil' : 'descartado'}</span>
+        <div class="fb"><strong>min ${esc(fr.time)}</strong><span class="badge ${fr.ok ? '' : 'off'}">${fr.ok ? 'útil' : (fr.failed ? 'falló' : 'descartado')}</span>
           <details><summary>Ver análisis</summary><div class="md">${md(fr.analysis)}</div></details></div>
       </div>`).join('') + '</div>';
   } else if (tab === 'sources') {

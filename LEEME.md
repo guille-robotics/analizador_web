@@ -24,8 +24,11 @@ venv\Scripts\python.exe app.py
 
 ## Cómo se usa
 
-- **Nuevo análisis**: completa el formulario y pulsa *Analizar*. Antes, el botón **Previsualizar** descarga
-  8 segundos del video en ese minuto para que confirmes el color de camiseta.
+- **Nuevo análisis**: completa el formulario y pulsa *Analizar*. Para un **tiempo completo** pon, por ejemplo,
+  minuto de inicio = el del pitazo inicial y duración = 45 (o 50 con adición). Puedes analizar hasta 120 minutos
+  (se cambia con `MAX_DURATION` en `.env`).
+- **Frames**: si dejas el campo vacío (automático) se analiza 1 frame cada 30 segundos de video: unos 20 para
+  10 minutos y unos 90 para un tiempo completo. Puedes fijar un número (de 3 a 200) si quieres más detalle.
 - **Cancelar**: mientras se descarga o se analiza hay un botón rojo para cancelar. Corta de verdad la
   descarga (no queda yt-dlp corriendo de fondo).
 - Cuando termina: pestaña **Chat** (preguntas), **Informe** (resumen + **Descargar PDF**) y
@@ -39,9 +42,24 @@ venv\Scripts\python.exe app.py
 
 De cada tramo se revisan unas 4 veces más tomas de las que pides y se descartan, **sin llamar a la API**,
 las que no muestran la cancha (primeros planos, público, banco, gráficos). Solo se envían a Claude los planos
-generales, repartidos a lo largo del tramo. Es más barato y el informe sale mejor. En la pestaña **Frames**
-ves cuántas tomas se revisaron y cuántas pasaron el filtro.
+generales, repartidos a lo largo del tramo. Así no se gasta análisis en tomas inútiles y el informe sale mejor.
+En la pestaña **Frames** ves cuántas tomas se revisaron y cuántas pasaron el filtro.
 Si tu transmisión casi no tiene planos generales, baja `GRASS_MIN` en `.env` (por defecto 0.40).
+
+## Tramos largos (un tiempo completo)
+
+Cuando hay más de 24 frames útiles, el informe no se hace de golpe: primero se **resume cada bloque de unos
+12 frames** (por ejemplo, de 10 minutos de juego) y después se unifican los resúmenes en el informe final, que
+incluye una sección *Evolución durante el tramo*. Así no se pierde detalle y se ven los cambios a lo largo del
+tiempo. Los resúmenes por bloque se pueden ver al final de la pestaña **Informe** y van en el PDF. El chat
+conoce el informe, los resúmenes y las observaciones de cada frame.
+
+Para saber:
+- La descarga de 45 minutos en 720p ocupa del orden de varios cientos de MB mientras se procesa (se borra al
+  terminar) y puede tardar varios minutos según tu conexión. Se puede cancelar en cualquier momento.
+- Analizar ~90 frames tarda unos minutos. Si tu cuenta de Anthropic tiene límite de velocidad bajo, la app
+  reintenta sola (con espera) y puede tardar un poco más. Si algún frame falla igual, queda registrado en el
+  log y el informe se hace con los demás.
 
 ## PDF
 
@@ -65,7 +83,7 @@ Conviene usar una cuenta de Google secundaria: YouTube puede limitar cuentas que
 ## Notas
 
 - El minuto de inicio es el **minuto del video de YouTube** (no del partido).
-- El equipo se identifica solo por el color de camiseta: confirma el color con la previsualización.
+- El equipo se identifica solo por el color de camiseta: revisa la pestaña **Frames** al terminar para confirmar que miró al equipo correcto.
 - Solo se analizan fotogramas sueltos, no el movimiento. Sirve para formación, estructura y tendencias,
   pero un plano de TV no muestra toda la cancha: trata las conclusiones como hipótesis a contrastar.
 - Para más calidad cambia `ANALYSIS_MODEL` en `.env` a un modelo más potente (cuesta más por análisis).

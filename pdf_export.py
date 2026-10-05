@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 GREEN = "#1f7a4d"
+MAX_PDF_FRAMES = 24
 REPLACE = {"→": "->", "←": "<-", "≥": ">=", "≤": "<=", "≈": "~", "✓": "-", "✔": "-",
            " ": " ", "‑": "-", "​": "", "−": "-"}
 
@@ -161,8 +162,20 @@ def build_pdf(meta, frames_dir, include_frames=True, include_chat=False):
     story += [kv_table(rows), Spacer(1, 6)]
     story += md_flowables(meta.get("report", ""))
 
+    blocks = meta.get("blocks") or []
+    if blocks and not combined:
+        story += [Paragraph("Detalle por bloques de tiempo", st["h2"]),
+                  Paragraph("Resumen de cada parte del tramo, a partir de los cuales se redactó el informe.", st["sub"])]
+        for i, b in enumerate(blocks, 1):
+            story.append(Paragraph(inline(f"Bloque {i}: minutos {b['from']} a {b['to']} ({b['n']} frames)"), st["h3"]))
+            story += md_flowables(b["summary"])
+
     if include_frames and not combined:
         shown = sorted((x for x in meta["frames"] if x.get("ok")), key=lambda x: x["seconds"])
+        total_shown = len(shown)
+        if total_shown > MAX_PDF_FRAMES:   # en tramos largos se muestra una muestra pareja para no inflar el PDF
+            idx = sorted(set(round(i * (total_shown - 1) / (MAX_PDF_FRAMES - 1)) for i in range(MAX_PDF_FRAMES)))
+            shown = [shown[i] for i in idx]
         cells = []
         for fr in shown:
             im = thumb(Path(frames_dir) / fr["file"])
@@ -175,9 +188,11 @@ def build_pdf(meta, frames_dir, include_frames=True, include_chat=False):
                 cap += " · " + inline(phase[:110] + ("…" if len(phase) > 110 else ""))
             cells.append([im, Paragraph(cap, st["cap"])])
         if cells:
-            story += [Paragraph("Fotogramas analizados", st["h2"]),
-                      Paragraph("Planos generales que se enviaron a Claude, para verificar que miró al equipo correcto.",
-                                st["sub"])]
+            intro = "Planos generales que se enviaron a Claude, para verificar que miró al equipo correcto."
+            if total_shown > len(shown):
+                intro = (f"Muestra de {len(shown)} de {total_shown} planos generales analizados, repartidos a lo largo "
+                         "del tramo (todos están en la pestaña Frames de la aplicación).")
+            story += [Paragraph("Fotogramas analizados", st["h2"]), Paragraph(clean(intro), st["sub"])]
             grid = [cells[i:i + 2] for i in range(0, len(cells), 2)]
             for row in grid:
                 while len(row) < 2:
