@@ -446,8 +446,13 @@ def frame_prompt(m, time_label):
 
 {team_block(m)}
 
-Si el fotograma NO sirve para analisis tactico (repeticion, primer plano, publico, banco, cartel, \
-transicion de pantalla, o no se distingue al equipo), responde unicamente: "FRAME NO UTIL: <motivo breve>".
+Descarta el fotograma SOLO si no se puede sacar ninguna informacion tactica del equipo: repeticion o camara lenta \
+con graficos, primer plano de una persona, publico, banco, cartel o transicion de pantalla, o si el equipo no \
+aparece en la imagen. En ese caso responde unicamente: "FRAME NO UTIL: <motivo breve>".
+
+IMPORTANTE: en una transmision de TV los jugadores suelen verse pequenos y a veces solo se ve parte de la cancha. \
+Eso NO es motivo para descartar: describe lo que si se puede ver (posiciones relativas, lineas, distancias, hacia \
+donde se juega) y baja la confianza. Tambien sirven los saques, las pelotas paradas y las transiciones.
 
 Si sirve, describe SOLO lo que se ve, sin inventar, con estas secciones breves:
 - Fase del juego: (ataque posicional, defensa organizada, transicion, balon parado, etc.)

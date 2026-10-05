@@ -27,8 +27,9 @@ venv\Scripts\python.exe app.py
 - **Nuevo análisis**: completa el formulario y pulsa *Analizar*. Para un **tiempo completo** pon, por ejemplo,
   minuto de inicio = el del pitazo inicial y duración = 45 (o 50 con adición). Puedes analizar hasta 120 minutos
   (se cambia con `MAX_DURATION` en `.env`).
-- **Frames**: si dejas el campo vacío (automático) se analiza 1 frame cada 30 segundos de video: unos 20 para
-  10 minutos y unos 90 para un tiempo completo. Puedes fijar un número (de 3 a 200) si quieres más detalle.
+- **Frames**: el campo vuelve siempre a *automático* (no recuerda el valor anterior). Si lo dejas vacío se analiza 1 frame cada 30 segundos de video: unos 20 para
+  10 minutos y unos 90 para **45 minutos**. Si quieres más detalle fija un número (de 3 a 200), por ejemplo
+  135 para 45 minutos (1 cada 20 s). La app te avisa si pones muy pocos para la duración.
 - **Cancelar**: mientras se descarga o se analiza hay un botón rojo para cancelar. Corta de verdad la
   descarga (no queda yt-dlp corriendo de fondo).
 - Cuando termina: pestaña **Chat** (preguntas), **Informe** (resumen + **Descargar PDF**) y

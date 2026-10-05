@@ -139,6 +139,8 @@
   #pdfMsg { margin:0; }
   #pdfMsg.err { color:var(--err); font-weight:600; }
 
+  .filternote.warnnote { background:var(--warn-bg); color:var(--warn); }
+  .fcard .reason { color:var(--muted); font-size:13px; margin-top:4px; }
   .blocks summary { cursor:pointer; color:var(--accent); }
   .blocks h4 { margin:16px 0 4px; font-size:15px; }
   .filternote { background:var(--soft); border-radius:10px; padding:9px 14px; margin-bottom:14px; font-size:14px; }
@@ -293,8 +295,9 @@ const isCombined = m => m && m.kind === 'combined';
 const rangeLabel = m => isCombined(m) ? `Combinado · ${m.n_sources != null ? m.n_sources : (m.sources || []).length} fuentes`
                                        : `min ${m.start_minute}–${m.start_minute + m.duration_minutes}`;
 const matchCount = m => new Set((m.sources || []).map(s => s.clean_url)).size;
-function saveForm(v) { try { localStorage.setItem('analizador_form', JSON.stringify(v)); } catch (e) {} }
-function loadSaved() { try { return JSON.parse(localStorage.getItem('analizador_form')) || {}; } catch (e) { return {}; } }
+/* El número de frames NO se recuerda entre análisis: un valor viejo (p. ej. 10) arruinaría un tramo largo sin que se note. */
+function saveForm(v) { try { const { n_frames, ...rest } = v; localStorage.setItem('analizador_form', JSON.stringify(rest)); } catch (e) {} }
+function loadSaved() { try { const v = JSON.parse(localStorage.getItem('analizador_form')) || {}; delete v.n_frames; return v; } catch (e) { return {}; } }
 const clock = s => { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 
 /* ---------- configuración y avisos ---------- */
@@ -398,6 +401,7 @@ function showNew(prefill) {
   stopPolling(); current = null;
   $('#viewAnalysis').hidden = true; $('#viewNew').hidden = false;
   const v = prefill || loadSaved();
+  $('#f_n_frames').value = '';              // siempre vuelve a "automático" salvo que se reintente con un número fijado
   FIELDS.forEach(k => { const el = $('#f_' + k); if (el && v[k] !== undefined && v[k] !== null) el.value = v[k]; });
   $('#formError').textContent = '';
   updateHints();
@@ -420,7 +424,10 @@ function updateHints() {
   let h = raw ? `Se analizarán ${n} frames.` : `Automático: unos ${n} frames (1 cada 30 segundos de video).`;
   h += ' Solo se envían planos generales de la cancha.';
   if (n >= 40) h += ' Con tantos frames el análisis tarda varios minutos; puedes cancelarlo cuando quieras.';
+  const rec = autoFrames(d), low = !!raw && n < rec * 0.5;
+  if (low) h = `Ojo: ${n} frames son pocos para ${d} minutos (1 cada ${Math.round(d * 60 / n)} s). Lo recomendado es dejarlo vacío (unos ${rec}). ` + h;
   fr.textContent = h;
+  fr.style.color = low ? 'var(--warn)' : '';
 }
 ['#f_duration_minutes', '#f_n_frames'].forEach(s => $(s).addEventListener('input', updateHints));
 $('#form').addEventListener('submit', async e => {
@@ -468,7 +475,7 @@ function renderAnalysis() {
   $('#aTitle').textContent = m.team;
   $('#aSub').innerHTML = isCombined(m)
     ? `Combinado · ${m.sources.length} fuentes · ${matchCount(m)} partido(s)`
-    : `${rangeLabel(m)} · ${posLabel(m.position)} · camiseta ${esc(m.color)} · <a href="${esc(m.clean_url)}" target="_blank" rel="noopener">ver video</a>`;
+    : `${rangeLabel(m)} · ${posLabel(m.position)} · camiseta ${esc(m.color)} · ${m.n_frames} frames${m.n_frames_auto ? ' (automático)' : ''} · <a href="${esc(m.clean_url)}" target="_blank" rel="noopener">ver video</a>`;
   const body = $('#aBody');
   if (m.status === 'queued' || m.status === 'running') {
     body.innerHTML = `<div class="card"><div class="phaseRow"><strong id="phaseLabel"></strong>
@@ -553,10 +560,16 @@ function renderTab() {
     const f = m.filter;
     const note = f ? `<div class="filternote">Se revisaron <b>${f.reviewed}</b> tomas del tramo: <b>${f.wide}</b> eran planos generales.
       Se enviaron <b>${f.kept}</b> a Claude${f.fallback ? ' (había muy pocos planos generales; prueba otro minuto)' : ''}; el resto se descartó sin costo.</div>` : '';
-    pane.innerHTML = note + '<div class="frames">' + m.frames.map(fr => `
+    const dropped = m.frames.filter(x => !x.ok && !x.failed).length;
+    const warn = dropped / Math.max(1, m.frames.length) >= 0.4
+      ? `<div class="filternote warnnote">Claude descartó <b>${dropped} de ${m.frames.length}</b> frames como poco útiles (el motivo está en cada tarjeta).
+         Con tan pocos frames útiles el informe queda flojo: analiza otro tramo o usa más frames.</div>` : '';
+    const reason = fr => { const r = /FRAME NO [ÚU]TIL\**\s*:?\s*(.*)/i.exec(fr.analysis || ''); return r ? r[1].replace(/\*+/g, '').trim() : ''; };
+    pane.innerHTML = note + warn + '<div class="frames">' + m.frames.map(fr => `
       <div class="fcard">
         <a href="/media/${esc(m.id)}/${esc(fr.file)}" target="_blank"><img loading="lazy" src="/media/${esc(m.id)}/${esc(fr.file)}" alt="frame ${esc(fr.time)}"></a>
         <div class="fb"><strong>min ${esc(fr.time)}</strong><span class="badge ${fr.ok ? '' : 'off'}">${fr.ok ? 'útil' : (fr.failed ? 'falló' : 'descartado')}</span>
+          ${!fr.ok && !fr.failed && reason(fr) ? `<div class="reason">${esc(reason(fr))}</div>` : ''}
           <details><summary>Ver análisis</summary><div class="md">${md(fr.analysis)}</div></details></div>
       </div>`).join('') + '</div>';
   } else if (tab === 'sources') {
